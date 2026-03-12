@@ -1,0 +1,1414 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Emusol Player</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: #000;
+        overflow: hidden;
+      }
+
+      body {
+        font-family: Arial, sans-serif;
+      }
+
+      #game {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        background: #000;
+        overflow: hidden;
+      }
+
+      .ejs_menu_bar,
+      .ejs_settings_parent,
+      .ejs_context_menu,
+      .ejs_loading_text,
+      .ejs_start_button {
+        display: none !important;
+      }
+
+      #ds-layout {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 2;
+        --ds-side-panel-width: 22%;
+        --ds-top-panel-height: 22%;
+      }
+
+      #ds-layout[hidden] {
+        display: none !important;
+      }
+
+      .ds-primary-shell,
+      .ds-secondary-shell {
+        position: absolute;
+        overflow: hidden;
+        pointer-events: auto;
+        background: #000;
+      }
+
+      .ds-primary-shell {
+        pointer-events: none;
+        background: transparent;
+      }
+
+      .ds-primary-shell {
+        inset: 0;
+      }
+
+      .ds-secondary-shell {
+        border-left: 1px solid rgba(255, 255, 255, 0.08);
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      #ds-layout.layout-right .ds-primary-shell {
+        top: 0;
+        right: var(--ds-side-panel-width);
+        bottom: 0;
+        left: 0;
+      }
+
+      #ds-layout.layout-right .ds-secondary-shell {
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: var(--ds-side-panel-width);
+      }
+
+      #ds-layout.layout-left .ds-primary-shell {
+        top: 0;
+        right: 0;
+        bottom: 0;
+        left: var(--ds-side-panel-width);
+      }
+
+      #ds-layout.layout-left .ds-secondary-shell {
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: var(--ds-side-panel-width);
+      }
+
+      #ds-layout.layout-top .ds-primary-shell {
+        top: var(--ds-top-panel-height);
+        right: 0;
+        bottom: 0;
+        left: 0;
+      }
+
+      #ds-layout.layout-top .ds-secondary-shell {
+        top: 0;
+        right: 0;
+        left: 0;
+        height: var(--ds-top-panel-height);
+      }
+
+      #ds-layout.layout-bottom .ds-primary-shell {
+        top: 0;
+        right: 0;
+        bottom: var(--ds-top-panel-height);
+        left: 0;
+      }
+
+      #ds-layout.layout-bottom .ds-secondary-shell {
+        right: 0;
+        bottom: 0;
+        left: 0;
+        height: var(--ds-top-panel-height);
+      }
+
+      #ds-layout.layout-detached .ds-primary-shell {
+        inset: 0;
+      }
+
+      #ds-layout.layout-detached .ds-secondary-shell {
+        display: none;
+      }
+
+      .ds-canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+        background: #000;
+        outline: none;
+      }
+
+      #ds-primary-canvas {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="game"></div>
+    <div id="ds-layout" hidden>
+      <div class="ds-primary-shell">
+        <canvas id="ds-primary-canvas" class="ds-canvas"></canvas>
+      </div>
+      <div class="ds-secondary-shell">
+        <canvas id="ds-secondary-canvas" class="ds-canvas"></canvas>
+      </div>
+    </div>
+
+    <script>
+      const EMUSOL_SOURCE = 'emusol';
+      const PLAYER_SOURCE = 'emusol-emulatorjs';
+      let emulator = null;
+      let loaderInjected = false;
+      let pendingAudio = null;
+      let romUrl = null;
+      let currentPayload = null;
+      let sourceCanvas = null;
+      let dualScreenFrameId = 0;
+      let detachedWindow = null;
+      let detachedCanvas = null;
+      let closingDetachedWindow = false;
+      let detachedWindowDismissed = false;
+
+      const gameRoot = document.getElementById('game');
+      const dualScreenRoot = document.getElementById('ds-layout');
+      const primaryCanvas = document.getElementById('ds-primary-canvas');
+      const secondaryCanvas = document.getElementById('ds-secondary-canvas');
+
+      const postToParent = (type, payload = {}) => {
+        window.parent.postMessage({ source: PLAYER_SOURCE, type, ...payload }, '*');
+      };
+
+      const toErrorMessage = (error) => {
+        if (error && typeof error === 'object' && 'message' in error) {
+          return String(error.message);
+        }
+
+        return typeof error === 'string' ? error : 'Не удалось выполнить команду EmulatorJS.';
+      };
+
+      const isCanvasElement = (value) => Boolean(value && value.tagName === 'CANVAS' && typeof value.getContext === 'function');
+
+      const normalizeSecondScreenLayout = (value) => {
+        switch (value) {
+          case 'left':
+          case 'top':
+          case 'bottom':
+          case 'detached':
+            return value;
+          default:
+            return 'right';
+        }
+      };
+
+      const normalizePrimaryScreen = (value) => (value === 'bottom' ? 'bottom' : 'top');
+      const normalizeVideoFilter = (value) => (value === 'smooth' ? 'smooth' : 'sharp');
+      const normalizeAspectRatio = (value) => {
+        switch (value) {
+          case '4:3':
+          case '8:7':
+          case '3:2':
+            return value;
+          default:
+            return 'auto';
+        }
+      };
+      const normalizeIntegerScale = (value) => Boolean(value);
+      const normalizeSecondScreenSizePercent = (value) => {
+        const numericValue = Number(value);
+
+        if (!Number.isFinite(numericValue)) {
+          return 22;
+        }
+
+        return Math.max(18, Math.min(40, Math.round(numericValue)));
+      };
+      const normalizeScaleMode = (value, fallback = 'fit') => (value === 'stretch' ? 'stretch' : fallback);
+
+      const getDualScreenState = () => ({
+        secondScreenLayout: normalizeSecondScreenLayout(currentPayload?.preferences?.secondScreenLayout),
+        primaryScreen: normalizePrimaryScreen(currentPayload?.preferences?.primaryScreen),
+        secondScreenSizePercent: normalizeSecondScreenSizePercent(currentPayload?.preferences?.secondScreenSizePercent),
+        primaryScreenScaleMode: normalizeScaleMode(currentPayload?.preferences?.primaryScreenScaleMode, 'stretch'),
+        secondaryScreenScaleMode: normalizeScaleMode(currentPayload?.preferences?.secondaryScreenScaleMode, 'fit')
+      });
+      const getSingleScreenVideoState = () => ({
+        videoFilter: normalizeVideoFilter(currentPayload?.preferences?.videoFilter),
+        aspectRatio: normalizeAspectRatio(currentPayload?.preferences?.aspectRatio),
+        integerScale: normalizeIntegerScale(currentPayload?.preferences?.integerScale)
+      });
+
+      const isLiveDualScreenPlatform = () => currentPayload?.platform === 'DS';
+      const isSingleScreenLiveVideoPlatform = () => currentPayload?.platform === 'N64';
+      const getDsCoreDefaults = () => ({
+        desmume_screens_layout: 'top/bottom',
+        desmume_screens_gap: '0',
+        desmume_pointer_mouse: 'enabled',
+        desmume_pointer_type: 'touch'
+      });
+      const CANONICAL_CONTROL_BINDINGS = Object.freeze({
+        up: 'up',
+        down: 'down',
+        left: 'left',
+        right: 'right',
+        a: 'x',
+        b: 'z',
+        x: 's',
+        y: 'a',
+        l: 'q',
+        r: 'w',
+        start: 'enter',
+        select: 'rshift'
+      });
+
+      const normalizeControlBinding = (value, fallback) => {
+        if (typeof value !== 'string' || !value.trim()) {
+          return fallback;
+        }
+
+        return value.trim().toLowerCase();
+      };
+
+      const normalizeControlBindings = (bindings) => {
+        const nextBindings = { ...CANONICAL_CONTROL_BINDINGS };
+
+        if (!bindings || typeof bindings !== 'object') {
+          return nextBindings;
+        }
+
+        Object.entries(CANONICAL_CONTROL_BINDINGS).forEach(([action, fallback]) => {
+          nextBindings[action] = normalizeControlBinding(bindings[action], fallback);
+        });
+
+        return nextBindings;
+      };
+
+      const keyboardEventToBinding = (event) => {
+        const byCode = {
+          ArrowUp: 'up',
+          ArrowDown: 'down',
+          ArrowLeft: 'left',
+          ArrowRight: 'right',
+          Enter: 'enter',
+          ShiftRight: 'rshift',
+          ShiftLeft: 'shift',
+          Space: 'space',
+          Tab: 'tab',
+          Backspace: 'backspace',
+          ControlLeft: 'ctrl',
+          ControlRight: 'rctrl',
+          AltLeft: 'alt',
+          AltRight: 'ralt'
+        };
+
+        if (event.code === 'Escape') {
+          return null;
+        }
+
+        if (byCode[event.code]) {
+          return byCode[event.code];
+        }
+
+        if (/^Key[A-Z]$/.test(event.code)) {
+          return event.code.slice(-1).toLowerCase() || null;
+        }
+
+        if (/^Digit[0-9]$/.test(event.code)) {
+          return event.code.slice(-1) || null;
+        }
+
+        if (/^Numpad[0-9]$/.test(event.code)) {
+          return `num${event.code.slice(-1)}`;
+        }
+
+        return null;
+      };
+
+      const getActionForBinding = (bindings, binding) => {
+        for (const [action, candidate] of Object.entries(bindings || {})) {
+          if (candidate === binding) {
+            return action;
+          }
+        }
+
+        return null;
+      };
+
+      const bindingToKeyboardEventInit = (binding) => {
+        const normalized = normalizeControlBinding(binding, '');
+
+        if (!normalized) {
+          return null;
+        }
+
+        const byBinding = {
+          up: { code: 'ArrowUp', key: 'ArrowUp', location: 0 },
+          down: { code: 'ArrowDown', key: 'ArrowDown', location: 0 },
+          left: { code: 'ArrowLeft', key: 'ArrowLeft', location: 0 },
+          right: { code: 'ArrowRight', key: 'ArrowRight', location: 0 },
+          enter: { code: 'Enter', key: 'Enter', location: 0 },
+          rshift: { code: 'ShiftRight', key: 'Shift', location: 2 },
+          shift: { code: 'ShiftLeft', key: 'Shift', location: 1 },
+          space: { code: 'Space', key: ' ', location: 0 },
+          tab: { code: 'Tab', key: 'Tab', location: 0 },
+          backspace: { code: 'Backspace', key: 'Backspace', location: 0 },
+          ctrl: { code: 'ControlLeft', key: 'Control', location: 1 },
+          rctrl: { code: 'ControlRight', key: 'Control', location: 2 },
+          alt: { code: 'AltLeft', key: 'Alt', location: 1 },
+          ralt: { code: 'AltRight', key: 'Alt', location: 2 }
+        };
+
+        if (byBinding[normalized]) {
+          return byBinding[normalized];
+        }
+
+        if (/^[a-z]$/.test(normalized)) {
+          return { code: `Key${normalized.toUpperCase()}`, key: normalized, location: 0 };
+        }
+
+        if (/^[0-9]$/.test(normalized)) {
+          return { code: `Digit${normalized}`, key: normalized, location: 0 };
+        }
+
+        if (/^num[0-9]$/.test(normalized)) {
+          const digit = normalized.slice(-1);
+          return { code: `Numpad${digit}`, key: digit, location: 3 };
+        }
+
+        return null;
+      };
+
+      const dispatchSyntheticInputBinding = (binding, pressed) => {
+        const eventInit = bindingToKeyboardEventInit(binding);
+
+        if (!eventInit) {
+          return false;
+        }
+
+        focusCanvas();
+        const eventName = pressed ? 'keydown' : 'keyup';
+        const targets = [];
+
+        if (sourceCanvas) {
+          targets.push(sourceCanvas);
+        }
+
+        targets.push(document);
+
+        targets.forEach((target) => {
+          try {
+            target.dispatchEvent(
+              new KeyboardEvent(eventName, {
+                bubbles: true,
+                cancelable: true,
+                code: eventInit.code,
+                key: eventInit.key,
+                location: eventInit.location
+              })
+            );
+          } catch {
+            // ignored
+          }
+        });
+
+        return true;
+      };
+
+      const base64ToUint8Array = (value) => {
+        const binary = atob(value);
+        const bytes = new Uint8Array(binary.length);
+
+        for (let index = 0; index < binary.length; index += 1) {
+          bytes[index] = binary.charCodeAt(index);
+        }
+
+        return bytes;
+      };
+
+      const uint8ArrayToBase64 = (bytes) => {
+        let binary = '';
+
+        for (let index = 0; index < bytes.length; index += 1) {
+          binary += String.fromCharCode(bytes[index]);
+        }
+
+        return btoa(binary);
+      };
+
+      const focusCanvas = () => {
+        sourceCanvas = document.querySelector('.ejs_canvas');
+
+        if (sourceCanvas && typeof sourceCanvas.focus === 'function') {
+          sourceCanvas.tabIndex = 0;
+          sourceCanvas.focus();
+        }
+      };
+
+      const getThumbnail = () => {
+        const canvas = document.querySelector('.ejs_canvas');
+
+        if (!isCanvasElement(canvas)) {
+          return null;
+        }
+
+        try {
+          return canvas.toDataURL('image/png');
+        } catch {
+          return null;
+        }
+      };
+
+      const createRomUrl = (romBase64) => {
+        if (romUrl) {
+          URL.revokeObjectURL(romUrl);
+        }
+
+        const romBytes = base64ToUint8Array(romBase64);
+        romUrl = URL.createObjectURL(new Blob([romBytes], { type: 'application/octet-stream' }));
+        return romUrl;
+      };
+
+      const reply = (requestId, ok, payload = {}) => {
+        postToParent('response', { requestId, ok, ...payload });
+      };
+
+      const requireEmulator = () => {
+        if (!emulator || !emulator.gameManager) {
+          throw new Error('Эмулятор еще не готов.');
+        }
+
+        return emulator;
+      };
+
+      const canControlAudio = () => Boolean(emulator && typeof emulator.setVolume === 'function');
+
+      const applyAudio = (volumePercent, muted, options = {}) => {
+        const { allowQueue = false } = options;
+
+        if (!canControlAudio()) {
+          if (allowQueue) {
+            pendingAudio = { volumePercent, muted };
+            return false;
+          }
+
+          throw new Error('Эмулятор еще не готов.');
+        }
+
+        const instance = emulator;
+        const normalizedVolume = Math.max(0, Math.min(100, Number(volumePercent ?? 100))) / 100;
+        instance.volume = normalizedVolume;
+        instance.muted = Boolean(muted);
+        instance.setVolume(instance.muted ? 0 : normalizedVolume);
+        pendingAudio = null;
+        return true;
+      };
+
+      const applyDsCoreDefaults = () => {
+        if (!isLiveDualScreenPlatform() || !emulator?.gameManager?.setVariable) {
+          return;
+        }
+
+        const defaults = getDsCoreDefaults();
+        for (const [key, value] of Object.entries(defaults)) {
+          try {
+            emulator.gameManager.setVariable(key, value);
+          } catch {
+            // ignored
+          }
+        }
+      };
+
+      const resetGameRootPresentation = () => {
+        gameRoot.style.top = '';
+        gameRoot.style.right = '';
+        gameRoot.style.bottom = '';
+        gameRoot.style.left = '';
+        gameRoot.style.overflow = '';
+      };
+
+      const applyPrimaryGameRootPresentation = (layout) => {
+        gameRoot.style.overflow = 'hidden';
+
+        switch (layout) {
+          case 'left':
+            gameRoot.style.top = '0';
+            gameRoot.style.right = '0';
+            gameRoot.style.bottom = '0';
+            gameRoot.style.left = 'var(--ds-side-panel-width)';
+            break;
+          case 'top':
+            gameRoot.style.top = 'var(--ds-top-panel-height)';
+            gameRoot.style.right = '0';
+            gameRoot.style.bottom = '0';
+            gameRoot.style.left = '0';
+            break;
+          case 'bottom':
+            gameRoot.style.top = '0';
+            gameRoot.style.right = '0';
+            gameRoot.style.bottom = 'var(--ds-top-panel-height)';
+            gameRoot.style.left = '0';
+            break;
+          case 'detached':
+            gameRoot.style.top = '0';
+            gameRoot.style.right = '0';
+            gameRoot.style.bottom = '0';
+            gameRoot.style.left = '0';
+            break;
+          case 'right':
+          default:
+            gameRoot.style.top = '0';
+            gameRoot.style.right = 'var(--ds-side-panel-width)';
+            gameRoot.style.bottom = '0';
+            gameRoot.style.left = '0';
+            break;
+        }
+      };
+
+      const applyDualScreenSizeVariables = (sizePercent) => {
+        const normalizedValue = `${normalizeSecondScreenSizePercent(sizePercent)}%`;
+        dualScreenRoot.style.setProperty('--ds-side-panel-width', normalizedValue);
+        dualScreenRoot.style.setProperty('--ds-top-panel-height', normalizedValue);
+      };
+
+      const resetSourceCanvasPresentation = () => {
+        sourceCanvas = document.querySelector('.ejs_canvas');
+
+        if (!isCanvasElement(sourceCanvas)) {
+          return;
+        }
+
+        sourceCanvas.style.position = '';
+        sourceCanvas.style.left = '';
+        sourceCanvas.style.top = '';
+        sourceCanvas.style.width = '';
+        sourceCanvas.style.height = '';
+        sourceCanvas.style.opacity = '';
+        sourceCanvas.style.pointerEvents = '';
+        sourceCanvas.style.zIndex = '';
+        sourceCanvas.style.transform = '';
+        sourceCanvas.style.imageRendering = '';
+      };
+
+      const applyPrimarySourceCanvasPresentation = (primaryScreen, scaleMode) => {
+        sourceCanvas = document.querySelector('.ejs_canvas');
+
+        if (!isCanvasElement(sourceCanvas)) {
+          return;
+        }
+
+        sourceCanvas.style.position = 'absolute';
+        sourceCanvas.style.opacity = '1';
+        sourceCanvas.style.pointerEvents = 'auto';
+        sourceCanvas.style.zIndex = '1';
+
+        if (scaleMode === 'stretch') {
+          sourceCanvas.style.left = '0';
+          sourceCanvas.style.top = primaryScreen === 'bottom' ? '-100%' : '0';
+          sourceCanvas.style.width = '100%';
+          sourceCanvas.style.height = '200%';
+          return;
+        }
+
+        const regions = getSourceRegions();
+        const containerWidth = gameRoot.clientWidth;
+        const containerHeight = gameRoot.clientHeight;
+
+        if (!regions || !containerWidth || !containerHeight) {
+          sourceCanvas.style.left = '0';
+          sourceCanvas.style.top = primaryScreen === 'bottom' ? '-100%' : '0';
+          sourceCanvas.style.width = '100%';
+          sourceCanvas.style.height = '200%';
+          return;
+        }
+
+        const region = regions[primaryScreen];
+        const fittedRect = getContainRect(containerWidth, containerHeight, region.sw, region.sh);
+
+        if (!fittedRect) {
+          sourceCanvas.style.left = '0';
+          sourceCanvas.style.top = primaryScreen === 'bottom' ? '-100%' : '0';
+          sourceCanvas.style.width = '100%';
+          sourceCanvas.style.height = '200%';
+          return;
+        }
+
+        sourceCanvas.style.left = `${fittedRect.dx}px`;
+        sourceCanvas.style.top = `${fittedRect.dy - (primaryScreen === 'bottom' ? fittedRect.dh : 0)}px`;
+        sourceCanvas.style.width = `${fittedRect.dw}px`;
+        sourceCanvas.style.height = `${fittedRect.dh * 2}px`;
+      };
+
+      const stopDualScreenLoop = () => {
+        if (dualScreenFrameId) {
+          cancelAnimationFrame(dualScreenFrameId);
+          dualScreenFrameId = 0;
+        }
+      };
+
+      const resetCanvas = (canvas) => {
+        if (!isCanvasElement(canvas)) {
+          return;
+        }
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          return;
+        }
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      };
+
+      const handleDetachedWindowClosed = () => {
+        if (!closingDetachedWindow) {
+          detachedWindowDismissed = true;
+        }
+
+        detachedWindow = null;
+        detachedCanvas = null;
+        closingDetachedWindow = false;
+      };
+
+      const closeDetachedWindow = () => {
+        if (!detachedWindow || detachedWindow.closed) {
+          detachedWindow = null;
+          detachedCanvas = null;
+          closingDetachedWindow = false;
+          return;
+        }
+
+        closingDetachedWindow = true;
+        detachedWindow.close();
+        detachedWindow = null;
+        detachedCanvas = null;
+        closingDetachedWindow = false;
+      };
+
+      const getDetachedWindowHtml = (title) => `<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <title>${title}</title>
+    <style>
+      html, body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: #000;
+        overflow: hidden;
+      }
+
+      canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+        background: #000;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="detached-canvas"></canvas>
+  </body>
+</html>`;
+
+      const getScreenRoleForCanvas = (role) => {
+        const state = getDualScreenState();
+        if (role === 'primary') {
+          return state.primaryScreen;
+        }
+
+        return state.primaryScreen === 'top' ? 'bottom' : 'top';
+      };
+
+      const getSourceDimensions = () => {
+        sourceCanvas = document.querySelector('.ejs_canvas');
+
+        if (!isCanvasElement(sourceCanvas)) {
+          return null;
+        }
+
+        let width = Number(sourceCanvas.width) || 0;
+        let height = Number(sourceCanvas.height) || 0;
+
+        if ((!width || !height) && isLiveDualScreenPlatform() && emulator?.gameManager?.getVideoDimensions) {
+          try {
+            const reportedWidth = Number(emulator.gameManager.getVideoDimensions('width')) || 0;
+            const reportedHeight = Number(emulator.gameManager.getVideoDimensions('height')) || 0;
+
+            if (reportedWidth && reportedHeight) {
+              width = reportedWidth;
+              height = reportedHeight;
+            }
+          } catch {
+            // ignored
+          }
+        }
+
+        if (!width || !height) {
+          width = sourceCanvas.clientWidth;
+          height = sourceCanvas.clientHeight;
+        }
+
+        if (!width || !height) {
+          return null;
+        }
+
+        return { width, height };
+      };
+
+      const getSourceRegions = () => {
+        const dimensions = getSourceDimensions();
+
+        if (!dimensions) {
+          return null;
+        }
+
+        const { width, height } = dimensions;
+
+        const halfHeight = Math.floor(height / 2);
+        return {
+          top: { sx: 0, sy: 0, sw: width, sh: halfHeight },
+          bottom: { sx: 0, sy: halfHeight, sw: width, sh: height - halfHeight }
+        };
+      };
+
+      const dispatchSourcePointer = (event, role) => {
+        if (!isLiveDualScreenPlatform()) {
+          return;
+        }
+
+        const regions = getSourceRegions();
+        if (!regions || !isCanvasElement(sourceCanvas)) {
+          return;
+        }
+
+        const screenRole = getScreenRoleForCanvas(role);
+        const region = regions[screenRole];
+
+        if (!region) {
+          return;
+        }
+
+        const dimensions = getSourceDimensions();
+        const inputRect = event.currentTarget.getBoundingClientRect();
+        const sourceRect = sourceCanvas.getBoundingClientRect();
+
+        if (!dimensions || !inputRect.width || !inputRect.height || !sourceRect.width || !sourceRect.height) {
+          return;
+        }
+
+        const { width: sourceWidth, height: sourceHeight } = dimensions;
+        const normalizedX = Math.max(0, Math.min(1, (event.clientX - inputRect.left) / inputRect.width));
+        const normalizedY = Math.max(0, Math.min(1, (event.clientY - inputRect.top) / inputRect.height));
+        const clientX = sourceRect.left + ((region.sx + normalizedX * region.sw) / sourceWidth) * sourceRect.width;
+        const clientY = sourceRect.top + ((region.sy + normalizedY * region.sh) / sourceHeight) * sourceRect.height;
+        const buttons = typeof event.buttons === 'number' ? event.buttons : 1;
+        const button = typeof event.button === 'number' ? event.button : 0;
+        const common = {
+          bubbles: true,
+          cancelable: true,
+          clientX,
+          clientY,
+          button,
+          buttons,
+          ctrlKey: Boolean(event.ctrlKey),
+          shiftKey: Boolean(event.shiftKey),
+          altKey: Boolean(event.altKey),
+          metaKey: Boolean(event.metaKey)
+        };
+
+        const mouseEventByPointerEvent = {
+          pointerdown: 'mousedown',
+          pointermove: 'mousemove',
+          pointerup: 'mouseup',
+          pointercancel: 'mouseup'
+        };
+        const mouseEventName = mouseEventByPointerEvent[event.type];
+
+        if (mouseEventName) {
+          sourceCanvas.dispatchEvent(new MouseEvent(mouseEventName, common));
+        }
+
+        if (event.type === 'pointerdown') {
+          focusCanvas();
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+      };
+
+      const bindMirrorInput = (canvas, role) => {
+        if (!isCanvasElement(canvas) || canvas.dataset.bound === 'true') {
+          return;
+        }
+
+        canvas.dataset.bound = 'true';
+        canvas.tabIndex = 0;
+        ['pointerdown', 'pointermove', 'pointerup', 'pointercancel'].forEach((eventName) => {
+          canvas.addEventListener(eventName, (event) => dispatchSourcePointer(event, role), { passive: false });
+        });
+        canvas.addEventListener('contextmenu', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+        });
+      };
+
+      bindMirrorInput(primaryCanvas, 'primary');
+      bindMirrorInput(secondaryCanvas, 'secondary');
+
+      const ensureDetachedWindow = () => {
+        if (detachedWindowDismissed) {
+          currentPayload.preferences.secondScreenLayout = 'right';
+          detachedWindowDismissed = false;
+          postToParent('error', { message: 'Окно второго экрана было закрыто. Возвращаю расположение справа.' });
+          return false;
+        }
+
+        if (detachedWindow && !detachedWindow.closed && isCanvasElement(detachedCanvas)) {
+          return true;
+        }
+
+        detachedWindow = window.open('', 'emusol-secondary-screen', 'popup=yes,width=540,height=420,resizable=yes,scrollbars=no');
+        if (!detachedWindow) {
+          currentPayload.preferences.secondScreenLayout = 'right';
+          postToParent('error', { message: 'Не удалось открыть отдельное окно второго экрана.' });
+          return false;
+        }
+
+        detachedWindow.document.open();
+        detachedWindow.document.write(getDetachedWindowHtml(`${currentPayload?.title || 'Emusol'} | второй экран`));
+        detachedWindow.document.close();
+        detachedCanvas = detachedWindow.document.getElementById('detached-canvas');
+        detachedWindow.addEventListener('beforeunload', handleDetachedWindowClosed);
+        bindMirrorInput(detachedCanvas, 'secondary');
+        return Boolean(detachedCanvas);
+      };
+
+      const resizeCanvas = (canvas, ownerWindow) => {
+        if (!isCanvasElement(canvas)) {
+          return false;
+        }
+
+        const dpr = ownerWindow?.devicePixelRatio || window.devicePixelRatio || 1;
+        const width = Math.max(1, Math.round(canvas.clientWidth * dpr));
+        const height = Math.max(1, Math.round(canvas.clientHeight * dpr));
+
+        if (canvas.width === width && canvas.height === height) {
+          return true;
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        return true;
+      };
+
+      const getContainRect = (targetWidth, targetHeight, sourceWidth, sourceHeight) => {
+        if (!targetWidth || !targetHeight || !sourceWidth || !sourceHeight) {
+          return null;
+        }
+
+        const targetAspect = targetWidth / targetHeight;
+        const sourceAspect = sourceWidth / sourceHeight;
+
+        if (sourceAspect > targetAspect) {
+          const drawWidth = targetWidth;
+          const drawHeight = drawWidth / sourceAspect;
+          return {
+            dx: 0,
+            dy: Math.round((targetHeight - drawHeight) / 2),
+            dw: Math.round(drawWidth),
+            dh: Math.round(drawHeight)
+          };
+        }
+
+        const drawHeight = targetHeight;
+        const drawWidth = drawHeight * sourceAspect;
+        return {
+          dx: Math.round((targetWidth - drawWidth) / 2),
+          dy: 0,
+          dw: Math.round(drawWidth),
+          dh: Math.round(drawHeight)
+        };
+      };
+
+      const getStretchRect = (targetWidth, targetHeight) => ({
+        dx: 0,
+        dy: 0,
+        dw: targetWidth,
+        dh: targetHeight
+      });
+
+      const getIntegerScaleRect = (targetWidth, targetHeight, sourceWidth, sourceHeight) => {
+        if (!targetWidth || !targetHeight || !sourceWidth || !sourceHeight) {
+          return null;
+        }
+
+        const maxScale = Math.floor(Math.min(targetWidth / sourceWidth, targetHeight / sourceHeight));
+        if (maxScale < 1) {
+          return null;
+        }
+
+        const drawWidth = sourceWidth * maxScale;
+        const drawHeight = sourceHeight * maxScale;
+        return {
+          dx: Math.round((targetWidth - drawWidth) / 2),
+          dy: Math.round((targetHeight - drawHeight) / 2),
+          dw: Math.round(drawWidth),
+          dh: Math.round(drawHeight)
+        };
+      };
+
+      const drawRegionToCanvas = (targetCanvas, region, mode = 'fit') => {
+        if (!isCanvasElement(targetCanvas) || !region || !isCanvasElement(sourceCanvas)) {
+          return;
+        }
+
+        resizeCanvas(targetCanvas, targetCanvas.ownerDocument.defaultView);
+        const ctx = targetCanvas.getContext('2d');
+
+        if (!ctx) {
+          return;
+        }
+
+        ctx.imageSmoothingEnabled = false;
+        ctx.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, targetCanvas.width, targetCanvas.height);
+
+        const drawRect =
+          mode === 'stretch'
+            ? getStretchRect(targetCanvas.width, targetCanvas.height)
+            : getContainRect(targetCanvas.width, targetCanvas.height, region.sw, region.sh);
+
+        if (!drawRect) {
+          return;
+        }
+
+        ctx.drawImage(
+          sourceCanvas,
+          region.sx,
+          region.sy,
+          region.sw,
+          region.sh,
+          drawRect.dx,
+          drawRect.dy,
+          drawRect.dw,
+          drawRect.dh
+        );
+      };
+
+      const getRequestedAspectRatio = (state, dimensions) => {
+        switch (state.aspectRatio) {
+          case '4:3':
+            return 4 / 3;
+          case '8:7':
+            return 8 / 7;
+          case '3:2':
+            return 3 / 2;
+          default:
+            return dimensions.width / dimensions.height;
+        }
+      };
+
+      const applySingleScreenCanvasPresentation = () => {
+        sourceCanvas = document.querySelector('.ejs_canvas');
+
+        if (!isCanvasElement(sourceCanvas)) {
+          return false;
+        }
+
+        const dimensions = getSourceDimensions();
+        const containerWidth = gameRoot.clientWidth;
+        const containerHeight = gameRoot.clientHeight;
+
+        if (!dimensions || !containerWidth || !containerHeight) {
+          return false;
+        }
+
+        const state = getSingleScreenVideoState();
+        const targetAspectRatio = getRequestedAspectRatio(state, dimensions);
+        const presentationHeight = dimensions.height;
+        const presentationWidth = Math.max(1, Math.round(presentationHeight * targetAspectRatio));
+        const drawRect =
+          (state.integerScale ? getIntegerScaleRect(containerWidth, containerHeight, presentationWidth, presentationHeight) : null) ??
+          getContainRect(containerWidth, containerHeight, presentationWidth, presentationHeight) ??
+          getStretchRect(containerWidth, containerHeight);
+
+        resetGameRootPresentation();
+        gameRoot.style.overflow = 'hidden';
+        sourceCanvas.style.position = 'absolute';
+        sourceCanvas.style.left = `${drawRect.dx}px`;
+        sourceCanvas.style.top = `${drawRect.dy}px`;
+        sourceCanvas.style.width = `${drawRect.dw}px`;
+        sourceCanvas.style.height = `${drawRect.dh}px`;
+        sourceCanvas.style.opacity = '1';
+        sourceCanvas.style.pointerEvents = 'auto';
+        sourceCanvas.style.zIndex = '1';
+        sourceCanvas.style.transform = 'none';
+        sourceCanvas.style.imageRendering = state.videoFilter === 'sharp' ? 'pixelated' : 'auto';
+        return true;
+      };
+
+      const clearAuxiliaryScreenArtifacts = () => {
+        stopDualScreenLoop();
+        dualScreenRoot.hidden = true;
+        dualScreenRoot.className = '';
+        closeDetachedWindow();
+        resetCanvas(primaryCanvas);
+        resetCanvas(secondaryCanvas);
+      };
+
+      const clearDualScreenPresentation = () => {
+        clearAuxiliaryScreenArtifacts();
+        resetGameRootPresentation();
+        resetSourceCanvasPresentation();
+      };
+
+      const renderDualScreenLayout = () => {
+        stopDualScreenLoop();
+
+        if (!isLiveDualScreenPlatform()) {
+          clearDualScreenPresentation();
+          return;
+        }
+
+        const regions = getSourceRegions();
+        if (!regions) {
+          dualScreenFrameId = requestAnimationFrame(renderDualScreenLayout);
+          return;
+        }
+
+        const state = getDualScreenState();
+        const primaryRole = state.primaryScreen;
+        const secondaryRole = state.primaryScreen === 'top' ? 'bottom' : 'top';
+        dualScreenRoot.hidden = false;
+        dualScreenRoot.className = `layout-${state.secondScreenLayout}`;
+        applyDualScreenSizeVariables(state.secondScreenSizePercent);
+        applyPrimaryGameRootPresentation(state.secondScreenLayout);
+        applyPrimarySourceCanvasPresentation(primaryRole, state.primaryScreenScaleMode);
+
+        if (state.secondScreenLayout === 'detached') {
+          if (!ensureDetachedWindow()) {
+            dualScreenRoot.className = 'layout-right';
+            applyPrimaryGameRootPresentation('right');
+            applyPrimarySourceCanvasPresentation(primaryRole, state.primaryScreenScaleMode);
+            drawRegionToCanvas(secondaryCanvas, regions[secondaryRole], state.secondaryScreenScaleMode);
+          } else {
+            drawRegionToCanvas(detachedCanvas, regions[secondaryRole], state.secondaryScreenScaleMode);
+          }
+        } else {
+          closeDetachedWindow();
+          drawRegionToCanvas(secondaryCanvas, regions[secondaryRole], state.secondaryScreenScaleMode);
+        }
+
+        dualScreenFrameId = requestAnimationFrame(renderDualScreenLayout);
+      };
+
+      const refreshDualScreenLayout = () => {
+        if (!isLiveDualScreenPlatform()) {
+          clearDualScreenPresentation();
+          return;
+        }
+
+        renderDualScreenLayout();
+      };
+
+      const refreshRuntimePresentation = () => {
+        if (isLiveDualScreenPlatform()) {
+          refreshDualScreenLayout();
+          return;
+        }
+
+        clearAuxiliaryScreenArtifacts();
+        resetGameRootPresentation();
+        resetSourceCanvasPresentation();
+
+        if (isSingleScreenLiveVideoPlatform()) {
+          if (!applySingleScreenCanvasPresentation()) {
+            requestAnimationFrame(refreshRuntimePresentation);
+          }
+        }
+      };
+
+      const handleCommand = async (requestId, command, payload = {}) => {
+        try {
+          switch (command) {
+            case 'pause':
+              requireEmulator().pause(true);
+              reply(requestId, true);
+              return;
+            case 'resume':
+              requireEmulator().play(true);
+              focusCanvas();
+              reply(requestId, true);
+              return;
+            case 'restart':
+              requireEmulator().gameManager.restart();
+              focusCanvas();
+              reply(requestId, true);
+              return;
+            case 'save-state': {
+              const state = requireEmulator().gameManager.getState();
+              reply(requestId, true, {
+                stateBase64: uint8ArrayToBase64(state),
+                thumbnailDataUrl: getThumbnail()
+              });
+              return;
+            }
+            case 'load-state':
+              requireEmulator().pause(true);
+              requireEmulator().gameManager.loadState(base64ToUint8Array(payload.stateBase64));
+              reply(requestId, true);
+              return;
+            case 'set-audio':
+              applyAudio(payload.volumePercent, payload.muted, { allowQueue: true });
+              reply(requestId, true);
+              return;
+            case 'set-video-options':
+              currentPayload = {
+                ...currentPayload,
+                preferences: {
+                  ...currentPayload?.preferences,
+                  videoFilter: normalizeVideoFilter(payload.videoFilter),
+                  aspectRatio: normalizeAspectRatio(payload.aspectRatio),
+                  integerScale: normalizeIntegerScale(payload.integerScale)
+                }
+              };
+              refreshRuntimePresentation();
+              reply(requestId, true);
+              return;
+            case 'set-dual-screen-layout':
+              currentPayload = {
+                ...currentPayload,
+                preferences: {
+                  ...currentPayload?.preferences,
+                  secondScreenLayout: normalizeSecondScreenLayout(payload.secondScreenLayout),
+                  primaryScreen: normalizePrimaryScreen(payload.primaryScreen),
+                  secondScreenSizePercent: normalizeSecondScreenSizePercent(payload.secondScreenSizePercent),
+                  primaryScreenScaleMode: normalizeScaleMode(payload.primaryScreenScaleMode, 'stretch'),
+                  secondaryScreenScaleMode: normalizeScaleMode(payload.secondaryScreenScaleMode, 'fit')
+                }
+              };
+              refreshRuntimePresentation();
+              reply(requestId, true);
+              return;
+            case 'set-control-bindings':
+              currentPayload = {
+                ...currentPayload,
+                preferences: {
+                  ...currentPayload?.preferences,
+                  controlBindings: normalizeControlBindings(payload.controlBindings)
+                }
+              };
+              focusCanvas();
+              reply(requestId, true);
+              return;
+            case 'focus':
+              focusCanvas();
+              reply(requestId, true);
+              return;
+            default:
+              throw new Error(`Неизвестная команда: ${command}`);
+          }
+        } catch (error) {
+          reply(requestId, false, { error: toErrorMessage(error) });
+        }
+      };
+
+      const bootPlayer = async (payload) => {
+        currentPayload = {
+          ...payload,
+          preferences: {
+            controlBindings: normalizeControlBindings(payload?.preferences?.controlBindings),
+            videoFilter: normalizeVideoFilter(payload?.preferences?.videoFilter),
+            aspectRatio: normalizeAspectRatio(payload?.preferences?.aspectRatio),
+            integerScale: normalizeIntegerScale(payload?.preferences?.integerScale),
+            secondScreenLayout: normalizeSecondScreenLayout(payload?.preferences?.secondScreenLayout),
+            primaryScreen: normalizePrimaryScreen(payload?.preferences?.primaryScreen),
+            secondScreenSizePercent: normalizeSecondScreenSizePercent(payload?.preferences?.secondScreenSizePercent),
+            primaryScreenScaleMode: normalizeScaleMode(payload?.preferences?.primaryScreenScaleMode, 'stretch'),
+            secondaryScreenScaleMode: normalizeScaleMode(payload?.preferences?.secondaryScreenScaleMode, 'fit')
+          }
+        };
+        clearDualScreenPresentation();
+        gameRoot.innerHTML = '';
+        emulator = null;
+        sourceCanvas = null;
+        pendingAudio = null;
+
+        window.EJS_player = '#game';
+        window.EJS_gameName = payload.title;
+        window.EJS_gameUrl = createRomUrl(payload.romBase64);
+        window.EJS_biosUrl = '';
+        window.EJS_core = payload.core;
+        window.EJS_pathtodata = payload.dataPath;
+        window.EJS_startOnLoaded = true;
+        window.EJS_DEBUG_XX = true;
+        window.EJS_disableDatabases = true;
+        window.EJS_disableLocalStorage = true;
+        window.EJS_hideSettings = true;
+        window.EJS_language = 'ru-RU';
+        window.EJS_backgroundColor = '#000000';
+        window.EJS_threads = false;
+        window.EJS_defaultOptions = isLiveDualScreenPlatform() ? getDsCoreDefaults() : undefined;
+        window.EJS_ready = () => {
+          try {
+            emulator = window.EJS_emulator;
+            applyDsCoreDefaults();
+            focusCanvas();
+            refreshRuntimePresentation();
+            postToParent('ready', { gameId: payload.gameId });
+          } catch (error) {
+            postToParent('error', { message: toErrorMessage(error) });
+          }
+        };
+        window.EJS_onGameStart = () => {
+          if (pendingAudio) {
+            try {
+              applyAudio(pendingAudio.volumePercent, pendingAudio.muted, { allowQueue: true });
+            } catch {
+              // ignored
+            }
+          } else {
+            try {
+              applyAudio(payload.volumePercent, payload.muted, { allowQueue: true });
+            } catch {
+              // ignored
+            }
+          }
+
+          applyDsCoreDefaults();
+          focusCanvas();
+          refreshRuntimePresentation();
+          postToParent('started', { gameId: payload.gameId });
+        };
+
+        if (loaderInjected) {
+          return;
+        }
+
+        const script = document.createElement('script');
+        script.src = new URL('./data/loader.js', window.location.href).toString();
+        script.onload = () => {
+          loaderInjected = true;
+        };
+        script.onerror = () => {
+          postToParent('error', { message: 'Не удалось загрузить встроенный EmulatorJS player.' });
+        };
+        document.body.appendChild(script);
+      };
+
+      window.addEventListener(
+        'keydown',
+        (event) => {
+          if (!event.isTrusted) {
+            return;
+          }
+
+          if (event.code === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            postToParent('escape');
+            return;
+          }
+
+          if (event.code === 'F5') {
+            event.preventDefault();
+            event.stopPropagation();
+            postToParent('quick-save');
+            return;
+          }
+
+          if (event.code === 'F8') {
+            event.preventDefault();
+            event.stopPropagation();
+            postToParent('quick-load');
+            return;
+          }
+
+          const activeBindings = normalizeControlBindings(currentPayload?.preferences?.controlBindings);
+          const physicalBinding = keyboardEventToBinding(event);
+          const mappedAction = physicalBinding ? getActionForBinding(activeBindings, physicalBinding) : null;
+
+          if (!mappedAction) {
+            return;
+          }
+
+          event.preventDefault();
+          event.stopPropagation();
+          dispatchSyntheticInputBinding(CANONICAL_CONTROL_BINDINGS[mappedAction], true);
+        },
+        true
+      );
+
+      window.addEventListener(
+        'keyup',
+        (event) => {
+          if (!event.isTrusted) {
+            return;
+          }
+
+          const activeBindings = normalizeControlBindings(currentPayload?.preferences?.controlBindings);
+          const physicalBinding = keyboardEventToBinding(event);
+          const mappedAction = physicalBinding ? getActionForBinding(activeBindings, physicalBinding) : null;
+
+          if (!mappedAction) {
+            return;
+          }
+
+          event.preventDefault();
+          event.stopPropagation();
+          dispatchSyntheticInputBinding(CANONICAL_CONTROL_BINDINGS[mappedAction], false);
+        },
+        true
+      );
+
+      window.addEventListener('message', (event) => {
+        const message = event.data;
+
+        if (!message || message.source !== EMUSOL_SOURCE) {
+          return;
+        }
+
+        if (message.type === 'init') {
+          void bootPlayer(message.payload);
+          return;
+        }
+
+        if (message.type === 'command') {
+          void handleCommand(message.requestId, message.command, message.payload);
+          return;
+        }
+
+        if (message.type === 'input-action') {
+          const binding =
+            typeof message.payload?.binding === 'string'
+              ? message.payload.binding
+              : CANONICAL_CONTROL_BINDINGS[message.payload?.action];
+
+          if (binding) {
+            dispatchSyntheticInputBinding(binding, Boolean(message.payload?.pressed));
+          }
+        }
+      });
+
+      window.addEventListener('beforeunload', () => {
+        clearDualScreenPresentation();
+      });
+
+      window.addEventListener('resize', () => {
+        refreshRuntimePresentation();
+      });
+
+      window.addEventListener('error', (event) => {
+        postToParent('error', { message: event.message || 'Ошибка внутри EmulatorJS.' });
+      });
+
+      window.addEventListener('unhandledrejection', (event) => {
+        postToParent('error', { message: toErrorMessage(event.reason) });
+      });
+    </script>
+  </body>
+</html>

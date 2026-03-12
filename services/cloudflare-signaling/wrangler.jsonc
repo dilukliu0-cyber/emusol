@@ -1,0 +1,24 @@
+{
+  "name": "emusol-signaling",
+  "main": "worker.js",
+  "compatibility_date": "2026-03-12",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SIGNALING_HUB",
+        "class_name": "SignalingHub"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "SignalingHub"
+      ]
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

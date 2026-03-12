@@ -1,0 +1,10 @@
+{
+  "name": "@emusol/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Future Emusol mobile client.",
+  "scripts": {
+    "dev": "echo mobile client scaffold pending"
+  }
+}
+

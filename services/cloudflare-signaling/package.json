@@ -1,0 +1,10 @@
+{
+  "name": "@emusol/cloudflare-signaling",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Workers signaling service for Emusol",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  }
+}

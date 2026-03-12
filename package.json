@@ -1,0 +1,22 @@
+{
+  "name": "emusol",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Unified Switch-style emulator hub with desktop-first local play and future online/mobile expansion.",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "services/*"
+  ],
+  "scripts": {
+    "dev:desktop": "npm run dev -w @emusol/desktop",
+    "build:desktop": "npm run build -w @emusol/desktop",
+    "preview:desktop": "npm run preview -w @emusol/desktop",
+    "dist:desktop": "npm run dist -w @emusol/desktop",
+    "typecheck": "npm run typecheck -w @emusol/desktop",
+    "dev:signaling": "npm run dev -w @emusol/signaling",
+    "start:signaling": "npm run start -w @emusol/signaling",
+    "deploy:cf-signaling": "npm run deploy -w @emusol/cloudflare-signaling",
+    "dev:cf-signaling": "npm run dev -w @emusol/cloudflare-signaling"
+  }
+}
