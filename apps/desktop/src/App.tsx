@@ -59,7 +59,14 @@ interface ActiveNetplaySession {
   platform: PlatformId;
   localPlayerIndex: NetplayPlayerIndex;
   remotePlayerIndex: NetplayPlayerIndex;
-  launchMode: 'experimental-relay';
+  launchMode: 'host-stream' | 'experimental-relay';
+}
+
+interface RemoteStreamSession {
+  roomId: string;
+  gameTitle: string;
+  platform: PlatformId;
+  audioAvailable: boolean;
 }
 
 interface NetplayInputSignalPayload {
@@ -82,6 +89,15 @@ interface NetplayRomHashSignalPayload {
   romHash: string;
 }
 
+interface NetplayRtcDescriptionSignalPayload {
+  type: 'offer' | 'answer';
+  sdp: string;
+}
+
+interface NetplayRtcIceSignalPayload {
+  candidate: RTCIceCandidateInit;
+}
+
 interface GamepadSummary {
   index: number;
   id: string;
@@ -95,6 +111,13 @@ interface FriendDraft {
 const EMUSOL_FRAME_SOURCE = 'emusol';
 const EMUSOL_PLAYER_SOURCE = 'emusol-emulatorjs';
 const EXPERIMENTAL_NETPLAY_PLATFORMS: PlatformId[] = ['NES', 'SNES', 'MEGADRIVE'];
+const NETPLAY_RTC_CONFIGURATION: RTCConfiguration = {
+  iceServers: [
+    {
+      urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.l.google.com:19302']
+    }
+  ]
+};
 const NETPLAY_STATE_HASH_INTERVAL_MS = 5000;
 const NETPLAY_INPUT_FRAME_DELAY = 2;
 const GAMEPAD_DEADZONE = 0.35;
@@ -208,6 +231,38 @@ const isNetplayRomHashSignalPayload = (value: unknown): value is NetplayRomHashS
   const candidate = value as Partial<NetplayRomHashSignalPayload>;
   return typeof candidate.romHash === 'string' && candidate.romHash.length > 0;
 };
+
+const isNetplayRtcDescriptionSignalPayload = (value: unknown): value is NetplayRtcDescriptionSignalPayload => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const candidate = value as Partial<NetplayRtcDescriptionSignalPayload>;
+  return (candidate.type === 'offer' || candidate.type === 'answer') && typeof candidate.sdp === 'string' && candidate.sdp.length > 0;
+};
+
+const isNetplayRtcIceSignalPayload = (value: unknown): value is NetplayRtcIceSignalPayload => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const candidate = value as Partial<NetplayRtcIceSignalPayload>;
+  return Boolean(candidate.candidate && typeof candidate.candidate === 'object');
+};
+
+const isAudioContextLike = (value: unknown): value is AudioContext =>
+  value !== null &&
+  typeof value === 'object' &&
+  'createMediaStreamDestination' in value &&
+  'destination' in value &&
+  'state' in value;
+
+const isAudioNodeLike = (value: unknown): value is AudioNode =>
+  value !== null &&
+  typeof value === 'object' &&
+  'connect' in value &&
+  typeof (value as { connect?: unknown }).connect === 'function' &&
+  'context' in value;
 
 const resolveNetplayGame = (games: LibraryGame[], room: Pick<NetplayRoom, 'gameId' | 'gameTitle' | 'platform' | 'romFileName'>): LibraryGame | null => {
   const byId = room.gameId ? games.find((game) => game.id === room.gameId) : null;
@@ -691,6 +746,21 @@ const formatGameCount = (count: number): string => {
   return `${count} игр`;
 };
 
+const formatLaunchCountLabel = (count: number): string => {
+  const remainder10 = count % 10;
+  const remainder100 = count % 100;
+
+  if (remainder10 === 1 && remainder100 !== 11) {
+    return `${count} запуск`;
+  }
+
+  if (remainder10 >= 2 && remainder10 <= 4 && (remainder100 < 12 || remainder100 > 14)) {
+    return `${count} запуска`;
+  }
+
+  return `${count} запусков`;
+};
+
 function App() {
   const bridge = window.emusol;
   const [profile, setProfile] = useState<ProfileState>(defaultProfile);
@@ -723,7 +793,11 @@ function App() {
   const [netplayPanelOpen, setNetplayPanelOpen] = useState(false);
   const [activeNetplaySession, setActiveNetplaySession] = useState<ActiveNetplaySession | null>(null);
   const [pendingNetplayLaunchRoom, setPendingNetplayLaunchRoom] = useState<NetplayRoom | null>(null);
-  const [netplaySyncStatus, setNetplaySyncStatus] = useState('Ожидание online-сеанса.');
+  const [netplaySyncStatus, setNetplaySyncStatus] = useState('Ожидание онлайн-сеанса.');
+  const [remoteStreamSession, setRemoteStreamSession] = useState<RemoteStreamSession | null>(null);
+  const [remoteStreamReady, setRemoteStreamReady] = useState(false);
+  const [remoteStreamError, setRemoteStreamError] = useState<string | null>(null);
+  const [remoteStreamHasAudio, setRemoteStreamHasAudio] = useState(false);
   const [, setStatusText] = useState('Импортируйте ROM-файлы. Для базовых платформ запуск уже встроен в приложение.');
   const [isLoading, setIsLoading] = useState(true);
   const [activePlayer, setActivePlayer] = useState<EmbeddedLaunchPayload | null>(null);
@@ -744,6 +818,7 @@ function App() {
   const sortMenuRef = useRef<HTMLDivElement | null>(null);
   const playerCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const playerFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const playerInstanceRef = useRef<NostalgistInstance | null>(null);
   const playerFramePendingRef = useRef<Map<string, PlayerFrameRequest>>(new Map());
   const playerFrameRequestIdRef = useRef(0);
@@ -758,7 +833,15 @@ function App() {
   const netplayClientRef = useRef<NetplayClient | null>(null);
   const libraryRef = useRef<LibraryGame[]>([]);
   const activePlayerRef = useRef<EmbeddedLaunchPayload | null>(null);
+  const remoteStreamSessionRef = useRef<RemoteStreamSession | null>(null);
   const activeNetplaySessionRef = useRef<ActiveNetplaySession | null>(null);
+  const netplayPeerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const netplayPeerRoleRef = useRef<'host' | 'guest' | null>(null);
+  const netplayPeerRoomIdRef = useRef<string | null>(null);
+  const netplayPendingIceCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const remoteMediaStreamRef = useRef<MediaStream | null>(null);
+  const hostMediaStreamRef = useRef<MediaStream | null>(null);
+  const hostAudioDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
   const localNetplayRomHashRef = useRef<string | null>(null);
   const remoteNetplayRomHashRef = useRef<string | null>(null);
   const localNetplayStateHashRef = useRef<string | null>(null);
@@ -806,7 +889,7 @@ function App() {
     }
 
     const handleGlobalEscape = (event: KeyboardEvent) => {
-      if (event.code !== 'Escape' || activePlayer) {
+      if (event.code !== 'Escape' || activePlayer || remoteStreamSession) {
         return;
       }
 
@@ -847,7 +930,7 @@ function App() {
     return () => {
       window.removeEventListener('keydown', handleGlobalEscape, true);
     };
-  }, [accountMenuOpen, activePlayer, libraryControlsOpen, netplayPanelOpen, rebindingAction, settingsModalOpen]);
+  }, [accountMenuOpen, activePlayer, libraryControlsOpen, netplayPanelOpen, rebindingAction, remoteStreamSession, settingsModalOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -894,6 +977,9 @@ function App() {
   useEffect(() => () => {
     netplayClientRef.current?.disconnect();
     netplayClientRef.current = null;
+    netplayPeerConnectionRef.current?.close();
+    hostMediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    remoteMediaStreamRef.current?.getTracks().forEach((track) => track.stop());
   }, []);
 
   useEffect(() => {
@@ -946,6 +1032,19 @@ function App() {
   useEffect(() => {
     activePlayerRef.current = activePlayer;
   }, [activePlayer]);
+
+  useEffect(() => {
+    remoteStreamSessionRef.current = remoteStreamSession;
+  }, [remoteStreamSession]);
+
+  useEffect(() => {
+    if (!remoteVideoRef.current || !remoteMediaStreamRef.current) {
+      return;
+    }
+
+    remoteVideoRef.current.srcObject = remoteMediaStreamRef.current;
+    void remoteVideoRef.current.play().catch(() => undefined);
+  }, [remoteStreamReady, remoteStreamSession]);
 
   useEffect(() => {
     activeNetplaySessionRef.current = activeNetplaySession;
@@ -1059,8 +1158,13 @@ function App() {
         ? 'Играть через 3DS эмулятор'
         : 'Подключить 3DS эмулятор'
       : selectedGameDescriptor?.actionLabel ?? 'Платформа позже';
-  const preferencePlatform = activePlayer?.game.platform ?? selectedGame?.platform ?? null;
-  const controlTargetGame = activePlayer?.game ?? selectedGame ?? null;
+  const streamedPlatform = remoteStreamSession?.platform ?? null;
+  const preferencePlatform = activePlayer?.game.platform ?? streamedPlatform ?? selectedGame?.platform ?? null;
+  const controlTargetGame =
+    activePlayer?.game ??
+    (remoteStreamSession && selectedGame?.platform === remoteStreamSession.platform ? selectedGame : null) ??
+    selectedGame ??
+    null;
   const currentEmbeddedPreferences = preferencePlatform
     ? embeddedPreferencesByPlatform[preferencePlatform] ?? defaultEmbeddedPreferences()
     : defaultEmbeddedPreferences();
@@ -1068,7 +1172,13 @@ function App() {
     controlTargetGame && preferencePlatform
       ? gameControlBindingsByGameId[controlTargetGame.id] ?? currentEmbeddedPreferences.controlBindings
       : currentEmbeddedPreferences.controlBindings;
-  const currentControlLayout = controlTargetGame ? CONTROL_LAYOUTS[controlTargetGame.platform] : [];
+  const currentControlLayout = activePlayer
+    ? CONTROL_LAYOUTS[activePlayer.game.platform]
+    : remoteStreamSession
+      ? CONTROL_LAYOUTS[remoteStreamSession.platform]
+      : controlTargetGame
+        ? CONTROL_LAYOUTS[controlTargetGame.platform]
+        : [];
   const visiblePauseTabs = activePlayer && supportsLiveDualScreenLayout(activePlayer.game.platform) ? pauseTabs : pauseTabs.filter((tab) => tab.id !== 'screens');
   const onlineUsers = useMemo(
     () =>
@@ -1080,7 +1190,7 @@ function App() {
   const currentNetplayMember = netplayRoom?.members.find((member) => member.userId === selfNetplayUserId) ?? null;
   const isNetplayHost = netplayRoom?.hostUserId === selfNetplayUserId;
   const selectedGameNetplaySupported = selectedGame ? supportsExperimentalNetplayPlatform(selectedGame.platform) : false;
-  const canCreateNetplayRoom = Boolean(isNetplayConnected && selectedGame && selectedGameNetplaySupported && canLaunchSelectedGame && !activePlayer && !netplayRoom);
+  const canCreateNetplayRoom = Boolean(isNetplayConnected && selectedGame && selectedGameNetplaySupported && canLaunchSelectedGame && !activePlayer && !remoteStreamSession && !netplayRoom);
   const activeInvite = netplayInvites[0] ?? null;
   const additionalInviteCount = Math.max(0, netplayInvites.length - 1);
 
@@ -1107,10 +1217,10 @@ function App() {
   }, [library, selectedGameId]);
 
   useEffect(() => {
-    if (activePlayer) {
+    if (activePlayer || remoteStreamSession) {
       setLibraryControlsOpen(false);
     }
-  }, [activePlayer]);
+  }, [activePlayer, remoteStreamSession]);
 
   useEffect(() => {
     if (!selectedGame) {
@@ -1130,20 +1240,28 @@ function App() {
 
     releaseRemotePressedActions();
     resetNetplaySyncState();
+    clearNetplayPeerConnection(activeNetplaySession.localPlayerIndex === 2);
+    if (activeNetplaySession.localPlayerIndex === 2) {
+      setRemoteStreamSession(null);
+    }
     setActiveNetplaySession(null);
 
     if (activePlayer?.game.id === activeNetplaySession.gameId) {
       setStatusText('Онлайн-сеанс завершен. Можно продолжить локально.');
+    } else if (activeNetplaySession.localPlayerIndex === 2) {
+      setStatusText('Стрим комнаты завершен.');
     }
   }, [activeNetplaySession, activePlayer?.game.id, netplayRoom]);
 
   useEffect(() => {
-    if (!pendingNetplayLaunchRoom || activePlayer) {
+    if (!pendingNetplayLaunchRoom || activePlayer || remoteStreamSession) {
       return;
     }
 
-    const matchingGame = resolveNetplayGame(library, pendingNetplayLaunchRoom);
-    if (!matchingGame) {
+    const isHostLaunch = pendingNetplayLaunchRoom.hostUserId === selfNetplayUserId;
+    const matchingGame = isHostLaunch ? resolveNetplayGame(library, pendingNetplayLaunchRoom) : resolveNetplayGame(library, pendingNetplayLaunchRoom);
+
+    if (isHostLaunch && !matchingGame) {
       setPendingNetplayLaunchRoom(null);
       setStatusText(`Комната запущена для ${pendingNetplayLaunchRoom.gameTitle}. У вас пока не найдена такая же игра в библиотеке.`);
       return;
@@ -1151,36 +1269,40 @@ function App() {
 
     if (!supportsExperimentalNetplayPlatform(pendingNetplayLaunchRoom.platform)) {
       setPendingNetplayLaunchRoom(null);
-      setStatusText(`Комната запущена для "${matchingGame.title}", но живая online-синхронизация сейчас доступна только для NES, SNES и Mega Drive.`);
+      setStatusText(`Комната запущена для "${pendingNetplayLaunchRoom.gameTitle}", но стриминг от хоста сейчас доступен только для NES, SNES и Mega Drive.`);
       return;
     }
 
     let cancelled = false;
 
-    void startEmbeddedLaunchForGame(matchingGame, pendingNetplayLaunchRoom)
-      .then((payload) => {
-        if (cancelled) {
-          return;
-        }
+    if (isHostLaunch && matchingGame) {
+      void startEmbeddedLaunchForGame(matchingGame, pendingNetplayLaunchRoom)
+        .then((payload) => {
+          if (cancelled) {
+            return;
+          }
 
-        const localPlayerIndex = pendingNetplayLaunchRoom.hostUserId === selfNetplayUserId ? 1 : 2;
-        setStatusText(`Online-сеанс подготовлен: ${payload.game.title}. Вы играете как Игрок ${localPlayerIndex}.`);
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setStatusText(error instanceof Error ? error.message : 'Не удалось подготовить online-сеанс.');
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setPendingNetplayLaunchRoom(null);
-        }
-      });
+          setStatusText(`Онлайн-сеанс подготовлен: ${payload.game.title}. Вы хост комнаты.`);
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            setStatusText(error instanceof Error ? error.message : 'Не удалось подготовить онлайн-сеанс.');
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setPendingNetplayLaunchRoom(null);
+          }
+        });
+    } else {
+      startRemoteStreamViewer(pendingNetplayLaunchRoom);
+      setPendingNetplayLaunchRoom(null);
+    }
 
     return () => {
       cancelled = true;
     };
-  }, [activePlayer, library, pendingNetplayLaunchRoom, selfNetplayUserId]);
+  }, [activePlayer, library, pendingNetplayLaunchRoom, remoteStreamSession, selfNetplayUserId]);
 
   const resetNetplaySyncState = () => {
     pendingNetplayStateSyncRef.current = null;
@@ -1196,7 +1318,354 @@ function App() {
     lastNetplaySyncRequestAtRef.current = 0;
     lastNetplaySyncAtRef.current = null;
     netplayFrameRef.current = 0;
-    setNetplaySyncStatus('Ожидание online-сеанса.');
+    setNetplaySyncStatus('Ожидание онлайн-сеанса.');
+  };
+
+  const resetRemoteStreamViewState = () => {
+    setRemoteStreamReady(false);
+    setRemoteStreamError(null);
+    setRemoteStreamHasAudio(false);
+
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+    }
+
+    if (remoteMediaStreamRef.current) {
+      remoteMediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      remoteMediaStreamRef.current = null;
+    }
+  };
+
+  const clearNetplayPeerConnection = (resetViewerState = false) => {
+    netplayPendingIceCandidatesRef.current = [];
+
+    const connection = netplayPeerConnectionRef.current;
+    if (connection) {
+      connection.ontrack = null;
+      connection.onicecandidate = null;
+      connection.onconnectionstatechange = null;
+      connection.close();
+    }
+
+    netplayPeerConnectionRef.current = null;
+    netplayPeerRoleRef.current = null;
+    netplayPeerRoomIdRef.current = null;
+
+    if (hostMediaStreamRef.current) {
+      hostMediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      hostMediaStreamRef.current = null;
+    }
+
+    hostAudioDestinationRef.current = null;
+
+    if (resetViewerState) {
+      resetRemoteStreamViewState();
+    }
+  };
+
+  const extractAudioContextFromValue = (root: unknown): AudioContext | null => {
+    const visited = new WeakSet<object>();
+    const queue: unknown[] = [root];
+    let iterations = 0;
+
+    while (queue.length && iterations < 300) {
+      const current = queue.shift();
+      iterations += 1;
+
+      if (isAudioContextLike(current)) {
+        return current;
+      }
+
+      if (!current || typeof current !== 'object') {
+        continue;
+      }
+
+      if (visited.has(current)) {
+        continue;
+      }
+
+      visited.add(current);
+
+      if (Array.isArray(current)) {
+        queue.push(...current);
+        continue;
+      }
+
+      for (const value of Object.values(current)) {
+        queue.push(value);
+      }
+    }
+
+    return null;
+  };
+
+  const extractBestAudioNodeCandidate = (root: unknown, audioContext: AudioContext): AudioNode | null => {
+    const visited = new WeakSet<object>();
+    const queue: Array<{ value: unknown; score: number }> = [{ value: root, score: 0 }];
+    let bestCandidate: { node: AudioNode; score: number } | null = null;
+    let iterations = 0;
+
+    while (queue.length && iterations < 500) {
+      const current = queue.shift();
+      iterations += 1;
+
+      if (!current) {
+        continue;
+      }
+
+      const value = current.value;
+      if (isAudioNodeLike(value) && value.context === audioContext && value !== audioContext.destination) {
+        const constructorName = value.constructor?.name ?? '';
+        const nextScore =
+          current.score +
+          (constructorName.includes('Gain') ? 100 : 0) +
+          (constructorName.includes('Dynamics') ? 80 : 0) +
+          (constructorName.includes('Destination') ? -200 : 0);
+
+        if (!bestCandidate || nextScore > bestCandidate.score) {
+          bestCandidate = { node: value, score: nextScore };
+        }
+      }
+
+      if (!value || typeof value !== 'object') {
+        continue;
+      }
+
+      if (visited.has(value)) {
+        continue;
+      }
+
+      visited.add(value);
+
+      if (Array.isArray(value)) {
+        value.forEach((entry) => queue.push({ value: entry, score: current.score }));
+        continue;
+      }
+
+      for (const [key, nestedValue] of Object.entries(value)) {
+        let boost = current.score;
+
+        if (/master|main|mix|output|gain|ctx|audio/i.test(key)) {
+          boost += 20;
+        }
+
+        queue.push({ value: nestedValue, score: boost });
+      }
+    }
+
+    return bestCandidate?.node ?? null;
+  };
+
+  const tryCreateHostAudioTrack = (): MediaStreamTrack | null => {
+    const instance = playerInstanceRef.current;
+    if (!instance) {
+      return null;
+    }
+
+    try {
+      const emscriptenAl = typeof instance.getEmscriptenAL === 'function' ? instance.getEmscriptenAL() : null;
+      const audioContext = extractAudioContextFromValue(emscriptenAl);
+      if (!audioContext) {
+        return null;
+      }
+
+      const sourceNode = extractBestAudioNodeCandidate(emscriptenAl, audioContext);
+      if (!sourceNode) {
+        return null;
+      }
+
+      const destination = audioContext.createMediaStreamDestination();
+      sourceNode.connect(destination);
+      hostAudioDestinationRef.current = destination;
+      return destination.stream.getAudioTracks()[0] ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  const flushPendingNetplayIceCandidates = async (connection: RTCPeerConnection) => {
+    if (!netplayPendingIceCandidatesRef.current.length) {
+      return;
+    }
+
+    const pending = [...netplayPendingIceCandidatesRef.current];
+    netplayPendingIceCandidatesRef.current = [];
+
+    for (const candidate of pending) {
+      try {
+        await connection.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch {
+        // ignored
+      }
+    }
+  };
+
+  const ensureNetplayPeerConnection = (role: 'host' | 'guest', roomId: string) => {
+    const existing = netplayPeerConnectionRef.current;
+    if (existing && netplayPeerRoleRef.current === role && netplayPeerRoomIdRef.current === roomId) {
+      return existing;
+    }
+
+    clearNetplayPeerConnection(role === 'guest');
+
+    const connection = new RTCPeerConnection(NETPLAY_RTC_CONFIGURATION);
+    netplayPeerConnectionRef.current = connection;
+    netplayPeerRoleRef.current = role;
+    netplayPeerRoomIdRef.current = roomId;
+
+    connection.onicecandidate = (event) => {
+      if (!event.candidate) {
+        return;
+      }
+
+      netplayClientRef.current?.sendSignal('stream-ice', {
+        candidate: event.candidate.toJSON()
+      });
+    };
+
+      connection.onconnectionstatechange = () => {
+        if (role === 'guest' && connection.connectionState === 'connected') {
+          setRemoteStreamReady(true);
+          setNetplaySyncStatus(remoteMediaStreamRef.current?.getAudioTracks().length ? 'Видео и звук от хоста подключены.' : 'Видео от хоста подключено.');
+        }
+
+      if (connection.connectionState === 'failed') {
+        if (role === 'guest') {
+          setRemoteStreamError('Не удалось подключиться к стриму хоста.');
+        }
+        setNetplaySyncStatus('Стрим разорван. Попробуйте создать комнату заново.');
+      }
+    };
+
+    if (role === 'guest') {
+      connection.ontrack = (event) => {
+        const incomingStream = event.streams[0] ?? new MediaStream([event.track]);
+        const previousStream = remoteMediaStreamRef.current;
+
+        if (previousStream && previousStream !== incomingStream) {
+          previousStream.getTracks().forEach((track) => track.stop());
+        }
+
+        remoteMediaStreamRef.current = incomingStream;
+
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = incomingStream;
+          void remoteVideoRef.current.play().catch(() => undefined);
+        }
+
+        setRemoteStreamReady(true);
+        setRemoteStreamError(null);
+        const hasAudio = incomingStream.getAudioTracks().length > 0;
+        setRemoteStreamHasAudio(hasAudio);
+        setRemoteStreamSession((current) => (current ? { ...current, audioAvailable: hasAudio } : current));
+        setNetplaySyncStatus(hasAudio ? 'Видео и звук от хоста подключены.' : 'Видео от хоста подключено.');
+      };
+    }
+
+    return connection;
+  };
+
+  const pushNetplayIceCandidate = async (candidate: RTCIceCandidateInit) => {
+    const connection = netplayPeerConnectionRef.current;
+    if (!connection || !connection.remoteDescription) {
+      netplayPendingIceCandidatesRef.current.push(candidate);
+      return;
+    }
+
+    try {
+      await connection.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch {
+      // ignored
+    }
+  };
+
+  const startRemoteStreamViewer = (room: NetplayRoom) => {
+    setAccountMenuOpen(false);
+    setPlayerError(null);
+    setPauseMenuOpen(false);
+    setRebindingAction(null);
+    setLibraryControlsOpen(false);
+    releasePressedActions();
+    releaseRemotePressedActions();
+    resetNetplaySyncState();
+    clearNetplayPeerConnection(true);
+
+    const nextSession: ActiveNetplaySession = {
+      roomId: room.id,
+      gameId: room.gameId,
+      gameTitle: room.gameTitle,
+      platform: room.platform,
+      localPlayerIndex: 2,
+      remotePlayerIndex: 1,
+      launchMode: 'host-stream'
+    };
+
+    ensureNetplayPeerConnection('guest', room.id);
+    setRemoteStreamSession({
+      roomId: room.id,
+      gameTitle: room.gameTitle,
+      platform: room.platform,
+      audioAvailable: false
+    });
+    activeNetplaySessionRef.current = nextSession;
+    setActiveNetplaySession(nextSession);
+    setRemoteStreamReady(false);
+    setRemoteStreamError(null);
+    setNetplaySyncStatus('Подключаюсь к видео хоста...');
+    setStatusText(`Подключаюсь к стриму комнаты: ${room.gameTitle}.`);
+  };
+
+  const startHostNetplayStream = async () => {
+    const session = activeNetplaySessionRef.current;
+    const currentPlayer = activePlayerRef.current;
+
+    if (
+      !session ||
+      session.launchMode !== 'host-stream' ||
+      session.localPlayerIndex !== 1 ||
+      !currentPlayer ||
+      currentPlayer.game.id !== session.gameId ||
+      getBuiltInRuntime(currentPlayer.game.platform) !== 'nostalgist' ||
+      !playerCanvasRef.current
+    ) {
+      return;
+    }
+
+    const connection = ensureNetplayPeerConnection('host', session.roomId);
+
+    if (!hostMediaStreamRef.current) {
+      if (typeof playerCanvasRef.current.captureStream !== 'function') {
+        throw new Error('Canvas stream недоступен в текущем рантайме Electron.');
+      }
+
+      const videoStream = playerCanvasRef.current.captureStream(60);
+      const stream = new MediaStream();
+      const videoTracks = videoStream.getVideoTracks();
+      const audioTrack = tryCreateHostAudioTrack();
+
+      videoTracks.forEach((track) => stream.addTrack(track));
+
+      if (audioTrack) {
+        stream.addTrack(audioTrack);
+      }
+
+      hostMediaStreamRef.current = stream;
+      stream.getTracks().forEach((track) => connection.addTrack(track, stream));
+
+      setNetplaySyncStatus(audioTrack ? 'Стрим запущен со звуком.' : 'Стрим запущен. Текущее ядро не отдало аудиодорожку.');
+    }
+
+    if (connection.localDescription?.type === 'offer') {
+      return;
+    }
+
+    const offer = await connection.createOffer();
+    await connection.setLocalDescription(offer);
+    netplayClientRef.current?.sendSignal('stream-offer', {
+      type: offer.type,
+      sdp: offer.sdp ?? ''
+    });
+    setNetplaySyncStatus(hostMediaStreamRef.current?.getAudioTracks().length ? 'Стрим отправлен гостю со звуком.' : 'Стрим отправлен гостю без звука.');
   };
 
   const stopPlayer = () => {
@@ -1332,6 +1801,7 @@ function App() {
   const pressLocalAction = (action: ControlAction, source: 'keyboard' | 'gamepad') => {
     const sourceSet = source === 'keyboard' ? keyboardPressedActionsRef.current : gamepadPressedActionsRef.current;
     const wasPressedByAnySource = keyboardPressedActionsRef.current.has(action) || gamepadPressedActionsRef.current.has(action);
+    const session = activeNetplaySessionRef.current;
 
     if (sourceSet.has(action)) {
       return;
@@ -1340,6 +1810,12 @@ function App() {
     sourceSet.add(action);
 
     if (wasPressedByAnySource) {
+      return;
+    }
+
+    if (!activePlayer && remoteStreamSessionRef.current && session?.launchMode === 'host-stream' && session.localPlayerIndex === 2) {
+      pressedActionsRef.current.add(action);
+      netplayClientRef.current?.sendSignal('host-input', { action, pressed: true });
       return;
     }
 
@@ -1353,7 +1829,7 @@ function App() {
       return;
     }
 
-    if (activeNetplaySessionRef.current) {
+    if (session?.launchMode === 'experimental-relay') {
       const targetFrame = netplayFrameRef.current + NETPLAY_INPUT_FRAME_DELAY;
       const payload: NetplayInputSignalPayload = { action, pressed: true, frame: targetFrame };
       enqueueNetplayFrameInput(localNetplayInputQueueRef, targetFrame, payload);
@@ -1375,11 +1851,22 @@ function App() {
     const sourceSet = source === 'keyboard' ? keyboardPressedActionsRef.current : gamepadPressedActionsRef.current;
     sourceSet.delete(action);
     const wasPressed = pressedActionsRef.current.has(action);
+    const session = activeNetplaySessionRef.current;
 
     const stillPressed =
       keyboardPressedActionsRef.current.has(action) || gamepadPressedActionsRef.current.has(action);
 
     if (stillPressed) {
+      return;
+    }
+
+    if (!activePlayer && remoteStreamSessionRef.current && session?.launchMode === 'host-stream' && session.localPlayerIndex === 2) {
+      if (!wasPressed) {
+        return;
+      }
+
+      pressedActionsRef.current.delete(action);
+      netplayClientRef.current?.sendSignal('host-input', { action, pressed: false });
       return;
     }
 
@@ -1396,7 +1883,7 @@ function App() {
       return;
     }
 
-    if (activeNetplaySessionRef.current) {
+    if (session?.launchMode === 'experimental-relay') {
       pressedActionsRef.current.delete(action);
       const targetFrame = netplayFrameRef.current + NETPLAY_INPUT_FRAME_DELAY;
       const payload: NetplayInputSignalPayload = { action, pressed: false, frame: targetFrame };
@@ -1645,6 +2132,18 @@ function App() {
   const releasePressedActions = () => {
     localNetplayInputQueueRef.current.clear();
     remoteNetplayInputQueueRef.current.clear();
+    const session = activeNetplaySessionRef.current;
+
+    if (!activePlayer && remoteStreamSessionRef.current && session?.launchMode === 'host-stream' && session.localPlayerIndex === 2) {
+      for (const action of pressedActionsRef.current) {
+        netplayClientRef.current?.sendSignal('host-input', { action, pressed: false });
+      }
+
+      pressedActionsRef.current.clear();
+      keyboardPressedActionsRef.current.clear();
+      gamepadPressedActionsRef.current.clear();
+      return;
+    }
 
     if (activePlayerRuntime === 'emulatorjs') {
       for (const action of pressedActionsRef.current) {
@@ -1670,7 +2169,7 @@ function App() {
     for (const action of pressedActionsRef.current) {
       try {
         instance?.pressUp({ button: action, player: localPlayerIndex });
-        if (activeNetplaySessionRef.current) {
+        if (session?.launchMode === 'experimental-relay') {
           netplayClientRef.current?.sendSignal('input', { action, pressed: false });
         }
       } catch {
@@ -1846,7 +2345,7 @@ function App() {
       setNetplaySyncStatus(`Host-снимок отправлен (${reason}).`);
       netplayClientRef.current?.sendSignal('state-sync', { stateBase64, stateHash, reason });
     } catch (error) {
-      setStatusText(error instanceof Error ? error.message : 'Не удалось отправить host-снимок для online-синхронизации.');
+      setStatusText(error instanceof Error ? error.message : 'Не удалось отправить host-снимок для онлайн-синхронизации.');
     } finally {
       netplaySnapshotSyncRef.current = false;
     }
@@ -1882,7 +2381,7 @@ function App() {
         setStatusText('Online-сеанс пересинхронизирован по состоянию хоста.');
       }
     } catch (error) {
-      setStatusText(error instanceof Error ? error.message : 'Не удалось применить host-состояние для online-синхронизации.');
+      setStatusText(error instanceof Error ? error.message : 'Не удалось применить host-состояние для онлайн-синхронизации.');
     } finally {
       netplayApplyingSyncRef.current = false;
 
@@ -1984,7 +2483,7 @@ function App() {
 
   const openPauseMenu = async () => {
     if (activeNetplaySessionRef.current) {
-      setStatusText('Во время experimental online-сеанса пауза, слоты и перезапуск пока отключены.');
+      setStatusText('Во время онлайн-сеанса пауза, слоты и перезапуск отключены.');
       return;
     }
 
@@ -2020,6 +2519,8 @@ function App() {
     }
     void persistAutoSave();
     stopPlayer();
+    clearNetplayPeerConnection(true);
+    setRemoteStreamSession(null);
     activePlayerRef.current = null;
     setActivePlayer(null);
     activeNetplaySessionRef.current = null;
@@ -2077,15 +2578,19 @@ function App() {
         playerInstanceRef.current = instance;
         playerCanvasRef.current?.focus();
         flushRemoteNetplayInputs();
-        void flushPendingNetplayStateSync();
-        void verifyCurrentNetplayRomHash();
         setIsPlayerLoading(false);
         const onlineSession = activeNetplaySessionRef.current;
         if (onlineSession && onlineSession.gameId === activePlayer.game.id) {
-          if (onlineSession.localPlayerIndex === 2) {
+          if (onlineSession.launchMode === 'experimental-relay' && onlineSession.localPlayerIndex === 2) {
             requestNetplayStateSync('initial');
           }
-          setStatusText(`Online-сеанс активен: ${activePlayer.game.title}. Вы играете как Игрок ${onlineSession.localPlayerIndex}.`);
+          if (onlineSession.launchMode === 'experimental-relay') {
+            void flushPendingNetplayStateSync();
+            void verifyCurrentNetplayRomHash();
+            setStatusText(`Онлайн-сеанс активен: ${activePlayer.game.title}. Вы играете как Игрок ${onlineSession.localPlayerIndex}.`);
+          } else {
+            setStatusText(`Комната запущена: ${activePlayer.game.title}. Вы хост и стримите игру другу.`);
+          }
         } else {
           setStatusText(`Запущено внутри Emusol: ${activePlayer.game.title}`);
         }
@@ -2151,6 +2656,37 @@ function App() {
   useEffect(() => {
     if (
       !activeNetplaySession ||
+      activeNetplaySession.launchMode !== 'host-stream' ||
+      activeNetplaySession.localPlayerIndex !== 1 ||
+      !activePlayer ||
+      activePlayerRuntime !== 'nostalgist' ||
+      isPlayerLoading ||
+      playerError
+    ) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    void startHostNetplayStream().catch((error) => {
+      if (cancelled) {
+        return;
+      }
+
+      const message = error instanceof Error ? error.message : 'Не удалось поднять стрим комнаты.';
+      setStatusText(message);
+      setNetplaySyncStatus('Стрим не поднялся.');
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeNetplaySession, activePlayer, activePlayerRuntime, isPlayerLoading, playerError]);
+
+  useEffect(() => {
+    if (
+      !activeNetplaySession ||
+      activeNetplaySession.launchMode !== 'experimental-relay' ||
       !activePlayer ||
       activePlayerRuntime !== 'nostalgist' ||
       isPlayerLoading ||
@@ -2174,6 +2710,7 @@ function App() {
   useEffect(() => {
     if (
       !activeNetplaySession ||
+      activeNetplaySession.launchMode !== 'experimental-relay' ||
       !activePlayer ||
       activePlayerRuntime !== 'nostalgist' ||
       isPlayerLoading ||
@@ -2295,12 +2832,12 @@ function App() {
   }, [activePlayer, currentEmbeddedPreferences.quickSlot, isPlayerLoading, pauseMenuOpen]);
 
   useEffect(() => {
-    if (!activePlayer) {
+    if (!activePlayer && !remoteStreamSession) {
       return undefined;
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      const canHandleDirectInput = activePlayerRuntime === 'nostalgist';
+      const canHandleDirectInput = activePlayerRuntime === 'nostalgist' || Boolean(remoteStreamSession);
 
       if (rebindingAction) {
         event.preventDefault();
@@ -2330,8 +2867,8 @@ function App() {
       if (event.code === 'F5') {
         event.preventDefault();
         event.stopPropagation();
-        if (activeNetplaySessionRef.current) {
-          setStatusText('Во время experimental online-сеанса быстрые сохранения отключены.');
+        if (activeNetplaySessionRef.current || remoteStreamSession) {
+          setStatusText('Во время онлайн-сеанса быстрые сохранения отключены.');
           return;
         }
         void handleSaveSlot(currentEmbeddedPreferences.quickSlot);
@@ -2341,8 +2878,8 @@ function App() {
       if (event.code === 'F8') {
         event.preventDefault();
         event.stopPropagation();
-        if (activeNetplaySessionRef.current) {
-          setStatusText('Во время experimental online-сеанса быстрая загрузка отключена.');
+        if (activeNetplaySessionRef.current || remoteStreamSession) {
+          setStatusText('Во время онлайн-сеанса быстрая загрузка отключена.');
           return;
         }
         void handleLoadSlot(currentEmbeddedPreferences.quickSlot);
@@ -2376,6 +2913,11 @@ function App() {
       event.preventDefault();
       event.stopPropagation();
 
+      if (remoteStreamSession) {
+        handleNetplayLeaveRoom();
+        return;
+      }
+
       if (pauseMenuOpen) {
         closePauseMenu();
       } else {
@@ -2384,7 +2926,7 @@ function App() {
     };
 
     const handleKeyUp = (event: KeyboardEvent) => {
-      if (activePlayerRuntime !== 'nostalgist' || pauseMenuOpen || rebindingAction) {
+      if ((activePlayerRuntime !== 'nostalgist' && !remoteStreamSession) || pauseMenuOpen || rebindingAction) {
         return;
       }
 
@@ -2408,7 +2950,7 @@ function App() {
       window.removeEventListener('keydown', handleKeyDown, true);
       window.removeEventListener('keyup', handleKeyUp, true);
     };
-  }, [activePlayer, activePlayerRuntime, pauseMenuOpen, rebindingAction, currentControlBindings, currentEmbeddedPreferences.quickSlot, activePlayer?.game.id]);
+  }, [activePlayer, activePlayerRuntime, pauseMenuOpen, rebindingAction, currentControlBindings, currentEmbeddedPreferences.quickSlot, activePlayer?.game.id, remoteStreamSession]);
 
   useEffect(() => {
     if (activePlayer || !libraryControlsOpen || !selectedGame) {
@@ -2457,7 +2999,7 @@ function App() {
   }, [activePlayer, libraryControlsOpen, rebindingAction, selectedGame?.id]);
 
   useEffect(() => {
-    if (!activePlayer) {
+    if (!activePlayer && !remoteStreamSession) {
       Array.from(gamepadPressedActionsRef.current).forEach((action) => releaseLocalAction(action, 'gamepad'));
       return undefined;
     }
@@ -2493,7 +3035,7 @@ function App() {
       window.cancelAnimationFrame(frameId);
       Array.from(gamepadPressedActionsRef.current).forEach((action) => releaseLocalAction(action, 'gamepad'));
     };
-  }, [activePlayer, activePlayerRuntime, pauseMenuOpen, rebindingAction, playerError]);
+  }, [activePlayer, activePlayerRuntime, pauseMenuOpen, rebindingAction, playerError, remoteStreamSession]);
 
   const saveProfile = async (nextProfile: ProfileState) => {
     setProfile(nextProfile);
@@ -2730,7 +3272,7 @@ function App() {
         platform: resolvedPayload.game.platform,
         localPlayerIndex,
         remotePlayerIndex: localPlayerIndex === 1 ? 2 : 1,
-        launchMode: 'experimental-relay'
+        launchMode: 'host-stream'
       };
       activeNetplaySessionRef.current = nextSession;
       setActiveNetplaySession(nextSession);
@@ -2766,7 +3308,10 @@ function App() {
         setNetplayRoom(null);
         setNetplayUsers([]);
         setPendingNetplayLaunchRoom(null);
+        releasePressedActions();
         releaseRemotePressedActions();
+        clearNetplayPeerConnection(true);
+        setRemoteStreamSession(null);
         activeNetplaySessionRef.current = null;
         setActiveNetplaySession(null);
         resetNetplaySyncState();
@@ -2779,7 +3324,10 @@ function App() {
         setNetplayRoom(room);
         if (!room) {
           setPendingNetplayLaunchRoom(null);
+          releasePressedActions();
           releaseRemotePressedActions();
+          clearNetplayPeerConnection(true);
+          setRemoteStreamSession(null);
           activeNetplaySessionRef.current = null;
           setActiveNetplaySession(null);
           resetNetplaySyncState();
@@ -2791,47 +3339,54 @@ function App() {
       },
       onLaunch: (room) => {
         setNetplayRoom(room);
-        const matchingGame = resolveNetplayGame(libraryRef.current, room);
-
-        if (!matchingGame) {
-          setStatusText(`Комната запущена для ${room.gameTitle}. У вас пока не найдена такая же игра в библиотеке.`);
-          return;
-        }
-
-        setSelectedGameId(matchingGame.id);
-
         if (!supportsExperimentalNetplayPlatform(room.platform)) {
-          setStatusText(`Комната запущена для "${matchingGame.title}", но живая online-синхронизация сейчас доступна только для NES, SNES и Mega Drive.`);
+          setStatusText(`Комната запущена для "${room.gameTitle}", но онлайн через стриминг сейчас доступен только для NES, SNES и Mega Drive.`);
           return;
         }
 
-        if (activePlayerRef.current) {
+        const matchingGame = resolveNetplayGame(libraryRef.current, room);
+        if (matchingGame) {
+          setSelectedGameId(matchingGame.id);
+        }
+
+        if (activePlayerRef.current || remoteStreamSessionRef.current) {
           setPendingNetplayLaunchRoom(room);
-          setStatusText(`Комната для "${matchingGame.title}" готова. Закройте текущую игру, и Emusol сам переключит вас в online-режим.`);
+          setStatusText(`Комната для "${room.gameTitle}" готова. Закройте текущий сеанс, и Emusol сам переключит вас в онлайн.`);
+          return;
+        }
+
+        if (room.hostUserId === selfNetplayUserId) {
+          if (!matchingGame) {
+            setStatusText(`Комната запущена для ${room.gameTitle}. У хоста не найдена игра в библиотеке.`);
+            return;
+          }
+
+          setPendingNetplayLaunchRoom(null);
+          void startEmbeddedLaunchForGame(matchingGame, room)
+            .then((payload) => {
+              setStatusText(`Онлайн-сеанс подготовлен: ${payload.game.title}. Вы хост комнаты.`);
+            })
+            .catch((error) => {
+              setStatusText(error instanceof Error ? error.message : 'Не удалось подготовить онлайн-сеанс.');
+            });
           return;
         }
 
         setPendingNetplayLaunchRoom(null);
-        void startEmbeddedLaunchForGame(matchingGame, room)
-          .then((payload) => {
-            const localPlayerIndex = room.hostUserId === selfNetplayUserId ? 1 : 2;
-            setStatusText(`Online-сеанс подготовлен: ${payload.game.title}. Вы играете как Игрок ${localPlayerIndex}.`);
-          })
-          .catch((error) => {
-            setStatusText(error instanceof Error ? error.message : 'Не удалось подготовить online-сеанс.');
-          });
+        startRemoteStreamViewer(room);
       },
       onSignal: (signal) => {
         const session = activeNetplaySessionRef.current;
         const currentPlayer = activePlayerRef.current;
 
-        if (signal.channel === 'input') {
+        if (signal.channel === 'host-input') {
           if (
             session &&
             currentPlayer &&
             signal.roomId === session.roomId &&
             currentPlayer.game.platform === session.platform &&
             currentPlayer.game.id === session.gameId &&
+            session.localPlayerIndex === 1 &&
             getBuiltInRuntime(currentPlayer.game.platform) === 'nostalgist' &&
             isNetplayInputSignalPayload(signal.payload)
           ) {
@@ -2848,60 +3403,51 @@ function App() {
           return;
         }
 
-        if (signal.channel === 'rom-hash' && isNetplayRomHashSignalPayload(signal.payload)) {
-          remoteNetplayRomHashRef.current = signal.payload.romHash;
-
-          if (localNetplayRomHashRef.current && localNetplayRomHashRef.current !== signal.payload.romHash) {
-            abortNetplaySession('ROM не совпадает с другом. Online-сеанс остановлен, чтобы не допустить рассинхрон.');
-            return;
-          }
-
-          if (localNetplayRomHashRef.current === signal.payload.romHash) {
-            setNetplaySyncStatus('ROM совпадает. Слежу за синхроном состояний.');
-          }
-
+        if (signal.channel === 'stream-offer' && isNetplayRtcDescriptionSignalPayload(signal.payload) && session.localPlayerIndex === 2) {
+          const description = signal.payload as NetplayRtcDescriptionSignalPayload;
+          void (async () => {
+            try {
+              const connection = ensureNetplayPeerConnection('guest', session.roomId);
+              await connection.setRemoteDescription(new RTCSessionDescription(description));
+              await flushPendingNetplayIceCandidates(connection);
+              const answer = await connection.createAnswer();
+              await connection.setLocalDescription(answer);
+              netplayClientRef.current?.sendSignal('stream-answer', {
+                type: answer.type,
+                sdp: answer.sdp ?? ''
+              });
+              setNetplaySyncStatus('Отвечаю на стрим хоста...');
+            } catch (error) {
+              const message = error instanceof Error ? error.message : 'Не удалось принять стрим хоста.';
+              setRemoteStreamError(message);
+              setStatusText(message);
+            }
+          })();
           return;
         }
 
-        if (signal.channel === 'state-hash' && isNetplayStateHashSignalPayload(signal.payload)) {
-          remoteNetplayStateHashRef.current = signal.payload.stateHash;
-
-          if (session.localPlayerIndex === 1 && localNetplayStateHashRef.current && localNetplayStateHashRef.current !== signal.payload.stateHash) {
-            setNetplaySyncStatus('Найдено расхождение у гостя. Отправляю host-снимок.');
-            void sendAuthoritativeNetplayStateSync('mismatch');
-            return;
-          }
-
-          if (session.localPlayerIndex === 2 && localNetplayStateHashRef.current && localNetplayStateHashRef.current !== signal.payload.stateHash) {
-            setNetplaySyncStatus('Найдено расхождение с хостом. Запрашиваю пересинхронизацию.');
-            requestNetplayStateSync('mismatch');
-            return;
-          }
-
-          if (localNetplayStateHashRef.current && localNetplayStateHashRef.current === signal.payload.stateHash) {
-            setNetplaySyncStatus('Состояния совпадают.');
-          }
-
+        if (signal.channel === 'stream-answer' && isNetplayRtcDescriptionSignalPayload(signal.payload) && session.localPlayerIndex === 1) {
+          const description = signal.payload as NetplayRtcDescriptionSignalPayload;
+          void (async () => {
+            try {
+              const connection = ensureNetplayPeerConnection('host', session.roomId);
+              await connection.setRemoteDescription(new RTCSessionDescription(description));
+              await flushPendingNetplayIceCandidates(connection);
+              setNetplaySyncStatus('Гость подключился к стриму.');
+            } catch (error) {
+              const message = error instanceof Error ? error.message : 'Не удалось подключить гостя к стриму.';
+              setStatusText(message);
+            }
+          })();
           return;
         }
 
-        if (signal.channel === 'state-sync-request') {
-          if (session.localPlayerIndex === 1) {
-            const rawReason =
-              signal.payload && typeof signal.payload === 'object' ? (signal.payload as { reason?: unknown }).reason : undefined;
-            const reason = rawReason === 'mismatch' || rawReason === 'initial' ? rawReason : 'request';
-            void sendAuthoritativeNetplayStateSync(reason);
-          }
-
+        if (signal.channel === 'stream-ice' && isNetplayRtcIceSignalPayload(signal.payload)) {
+          void pushNetplayIceCandidate(signal.payload.candidate);
           return;
         }
 
-        if (signal.channel === 'state-sync' && isNetplayStateSyncSignalPayload(signal.payload)) {
-          void applyIncomingNetplayStateSync(signal.payload);
-          return;
-        }
-
-        setStatusText(`Получен online-сигнал "${signal.channel}" от друга.`);
+      setStatusText(`Получен онлайн-сигнал "${signal.channel}" от друга.`);
       },
       onError: (message) => {
         setNetplayError(message);
@@ -2922,7 +3468,10 @@ function App() {
     setNetplayInvites([]);
     setNetplayError(null);
     setPendingNetplayLaunchRoom(null);
+    releasePressedActions();
     releaseRemotePressedActions();
+    clearNetplayPeerConnection(true);
+    setRemoteStreamSession(null);
     activeNetplaySessionRef.current = null;
     setActiveNetplaySession(null);
     resetNetplaySyncState();
@@ -2954,8 +3503,8 @@ function App() {
       return;
     }
 
-    if (activePlayerRef.current) {
-      setStatusText('Сначала закройте текущую игру, потом заходите в online-комнату.');
+    if (activePlayerRef.current || remoteStreamSessionRef.current) {
+      setStatusText('Сначала закройте текущую игру, потом заходите в онлайн-комнату.');
       return;
     }
 
@@ -2985,11 +3534,14 @@ function App() {
 
     netplayClientRef.current.leaveRoom();
     setPendingNetplayLaunchRoom(null);
+    releasePressedActions();
     releaseRemotePressedActions();
+    clearNetplayPeerConnection(true);
+    setRemoteStreamSession(null);
     activeNetplaySessionRef.current = null;
     setActiveNetplaySession(null);
     resetNetplaySyncState();
-    setStatusText('Вы вышли из online-комнаты.');
+    setStatusText('Вы вышли из онлайн-комнаты.');
   };
 
   const handleNetplayLaunchRoom = () => {
@@ -3251,7 +3803,7 @@ function App() {
 
   const handleSaveSlot = async (slot: number) => {
     if (activeNetplaySessionRef.current) {
-      setStatusText('Во время experimental online-сеанса сохранения по слотам отключены.');
+      setStatusText('Во время онлайн-сеанса сохранения по слотам отключены.');
       return;
     }
 
@@ -3282,7 +3834,7 @@ function App() {
 
   const handleLoadSlot = async (slot: number) => {
     if (activeNetplaySessionRef.current) {
-      setStatusText('Во время experimental online-сеанса загрузка из слотов отключена.');
+      setStatusText('Во время онлайн-сеанса загрузка из слотов отключена.');
       return;
     }
 
@@ -3306,7 +3858,7 @@ function App() {
 
   const handleLoadAutoSave = async () => {
     if (activeNetplaySessionRef.current) {
-      setStatusText('Во время experimental online-сеанса автосейв недоступен.');
+      setStatusText('Во время онлайн-сеанса автосейв недоступен.');
       return;
     }
 
@@ -3330,7 +3882,7 @@ function App() {
 
   const handleRestartGame = async () => {
     if (activeNetplaySessionRef.current) {
-      setStatusText('Во время experimental online-сеанса перезапуск отключен.');
+      setStatusText('Во время онлайн-сеанса перезапуск отключен.');
       return;
     }
 
@@ -3416,6 +3968,46 @@ function App() {
 
   if (isLoading) {
     return <div className="app-shell"><section className="panel loading-card">Загрузка Emusol...</section></div>;
+  }
+
+  if (remoteStreamSession) {
+    return (
+      <div className="player-shell remote-stream-shell">
+        <video ref={remoteVideoRef} className="player-stream-video" autoPlay playsInline />
+
+        {!remoteStreamReady && !remoteStreamError ? (
+          <div className="player-boot">
+            <strong>Подключение к стриму...</strong>
+            <span>{remoteStreamSession.gameTitle} | {formatPlatform(remoteStreamSession.platform)}</span>
+          </div>
+        ) : null}
+
+        {remoteStreamError ? (
+          <div className="player-error">
+            <strong>Не удалось подключить стрим</strong>
+            <span>{remoteStreamError}</span>
+            <button className="secondary-action" onClick={handleNetplayLeaveRoom}>
+              Выйти из комнаты
+            </button>
+          </div>
+        ) : null}
+
+        <div className="remote-stream-hud">
+          <div className="remote-stream-hud-copy">
+            <span>{remoteStreamSession.gameTitle} | {formatPlatform(remoteStreamSession.platform)}</span>
+            <div className="remote-stream-hud-status">
+              <span className="chip success">Стрим от хоста</span>
+              <span className={remoteStreamHasAudio ? 'chip success' : 'chip neutral'}>
+                {remoteStreamHasAudio ? 'Со звуком' : 'Без звука'}
+              </span>
+            </div>
+          </div>
+          <button className="secondary-action compact-action" onClick={handleNetplayLeaveRoom}>
+            Выйти
+          </button>
+        </div>
+      </div>
+    );
   }
 
   if (activePlayer) {
@@ -3948,7 +4540,7 @@ function App() {
         </>
       ) : null}
 
-      {activeInvite && !activePlayer ? (
+      {activeInvite && !activePlayer && !remoteStreamSession ? (
         <>
           <button className="screen-dim invite-dim" aria-label="Закрыть приглашение" onClick={() => handleDismissInvite(activeInvite.id)} />
           <section className="panel invite-modal">
@@ -3971,131 +4563,6 @@ function App() {
               </button>
             </div>
           </section>
-        </>
-      ) : null}
-
-      {netplayPanelOpen && !activePlayer ? (
-        <>
-          <button className="screen-dim netplay-panel-dim" aria-label="Закрыть онлайн-меню" onClick={() => setNetplayPanelOpen(false)} />
-          <aside className="panel netplay-drawer">
-            <div className="panel-header">
-              <div>
-                <span className="eyebrow">Онлайн</span>
-                <h3 className="settings-title">Комната и сеть</h3>
-              </div>
-              <button className="secondary-action compact-action" onClick={() => setNetplayPanelOpen(false)}>
-                Закрыть
-              </button>
-            </div>
-
-            <div className="settings-grid">
-              <div className="setting-card">
-                <span className="eyebrow">Сервер</span>
-                <div className="info-stack">
-                  <div className="info-line"><span>Статус</span><strong className="small-strong">{isNetplayConnected ? 'Подключен' : 'Оффлайн'}</strong></div>
-                  <div className="info-line"><span>Основной URL</span><strong className="small-strong">{signalingUrl}</strong></div>
-                  <div className="info-line"><span>Ваш ID</span><strong className="small-strong">{selfNetplayUserId}</strong></div>
-                </div>
-                <div className="inline-actions">
-                  {!isNetplayConnected ? (
-                    <button className="primary-action compact-action" onClick={() => handleConnectNetplay()}>
-                      Подключиться
-                    </button>
-                  ) : null}
-                  {canCreateNetplayRoom ? (
-                    <button className="primary-action compact-action" onClick={() => handleCreateNetplayRoom()}>
-                      Создать комнату
-                    </button>
-                  ) : null}
-                  {isNetplayConnected ? (
-                    <button className="secondary-action compact-action" onClick={() => handleDisconnectNetplay()}>
-                      Выйти из онлайна
-                    </button>
-                  ) : null}
-                </div>
-                <p className="hint-text">
-                  {selectedGameNetplaySupported
-                    ? 'Выберите игру, включите онлайн и создайте комнату. Сейчас игровой online поддержан для NES, SNES и Mega Drive.'
-                    : 'Онлайн и комнаты уже работают, но живая игровая синхронизация сейчас доведена только для NES, SNES и Mega Drive.'}
-                </p>
-              </div>
-
-              {netplayInvites.length ? (
-                <div className="setting-card">
-                  <span className="eyebrow">Приглашения</span>
-                  <div className="invite-list">
-                    {netplayInvites.map((invite) => (
-                      <div key={invite.id} className="invite-row">
-                        <div className="invite-copy">
-                          <strong>{invite.fromDisplayName}</strong>
-                          <span>{invite.gameTitle} | {invite.platform}</span>
-                        </div>
-                        <div className="inline-actions">
-                          <button className="primary-action compact-action" onClick={() => handleJoinInvite(invite)}>
-                            Принять
-                          </button>
-                          <button className="secondary-action compact-action" onClick={() => handleDismissInvite(invite.id)}>
-                            Отклонить
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {netplayRoom ? (
-                <div className="setting-card">
-                  <div className="panel-header">
-                    <span className="eyebrow">Комната</span>
-                    <span className="chip neutral">{netplayRoom.gameTitle}</span>
-                  </div>
-                  <div className="info-stack">
-                    <div className="info-line"><span>ID</span><strong className="small-strong">{netplayRoom.id}</strong></div>
-                    <div className="info-line"><span>Платформа</span><strong className="small-strong">{netplayRoom.platform}</strong></div>
-                    <div className="info-line"><span>Игроков</span><strong className="small-strong">{netplayRoom.members.length} / 2</strong></div>
-                    {currentNetplayMember ? (
-                      <div className="info-line">
-                        <span>Ваша роль</span>
-                        <strong className="small-strong">{currentNetplayMember.isHost ? 'Хост | Игрок 1' : 'Гость | Игрок 2'}</strong>
-                      </div>
-                    ) : null}
-                    <div className="info-line"><span>Синхрон</span><strong className="small-strong">{netplaySyncStatus}</strong></div>
-                  </div>
-                  <div className="room-member-list">
-                    {netplayRoom.members.map((member) => (
-                      <div key={member.userId} className="room-member-row">
-                        <strong>{member.displayName}</strong>
-                        <span className={member.ready ? 'chip success' : 'chip neutral'}>
-                          {member.isHost ? 'Хост' : 'Гость'} | {member.ready ? 'Готов' : 'Ждет'}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="inline-actions">
-                    <button className={currentNetplayMember?.ready ? 'switch-toggle active' : 'switch-toggle'} onClick={() => handleNetplayReadyToggle()}>
-                      {currentNetplayMember?.ready ? 'Готов' : 'Не готов'}
-                    </button>
-                    {isNetplayHost ? (
-                      <button className="primary-action compact-action" onClick={() => handleNetplayLaunchRoom()}>
-                        Запустить игру
-                      </button>
-                    ) : null}
-                    <button className="secondary-action compact-action" onClick={() => handleNetplayLeaveRoom()}>
-                      Выйти из комнаты
-                    </button>
-                  </div>
-                </div>
-              ) : isNetplayConnected ? (
-                <div className="setting-card">
-                  <span className="eyebrow">Комната</span>
-                  <p className="hint-text">Вы в онлайне. Теперь выберите игру и нажмите `Создать комнату`.</p>
-                </div>
-              ) : null}
-
-              {netplayError ? <p className="hint-text">{netplayError}</p> : null}
-            </div>
-          </aside>
         </>
       ) : null}
 
@@ -4183,10 +4650,6 @@ function App() {
               <div className="game-list">
                 {visibleGames.map((game) => {
                   const palette = getPlatformPalette(game.platform);
-                  const gameDescriptor = getBuiltInPlatformDescriptor(game.platform);
-                  const hasNative3dsProfile = game.platform === '3DS' && Boolean((emulatorProfiles['3DS'] ?? createDefaultEmulatorProfiles()['3DS']).executablePath);
-                  const gameStatusTone = hasNative3dsProfile ? 'success' : gameDescriptor.statusTone;
-                  const gameStatusLabel = hasNative3dsProfile ? 'Нативный запуск' : gameDescriptor.statusLabel;
                   return (
                     <button key={game.id} className={selectedGame?.id === game.id ? 'game-card active' : 'game-card'} onClick={() => setSelectedGameId(game.id)}>
                       <div className="game-card-art" style={{ background: `linear-gradient(135deg, ${palette[0]}, ${palette[1]})` }}>
@@ -4199,20 +4662,9 @@ function App() {
                       <div className="game-card-copy">
                         <div className="game-card-head">
                           <strong>{game.title}</strong>
-                          <span className="chip neutral">{formatPlatform(game.platform)}</span>
+                          <span className="chip neutral">{formatLaunchCountLabel(game.launchCount)}</span>
                         </div>
-                        <span className="game-card-subtitle">{game.subtitle}</span>
-                        <span className="game-card-last-played">{game.lastPlayedAt ? `Последняя: ${formatDate(game.lastPlayedAt)}` : 'Еще не запускалась'}</span>
-                        <div className="game-card-meta">
-                          {game.metadata.releaseYear ? <span>{game.metadata.releaseYear}</span> : null}
-                          {game.metadata.region ? <span>{game.metadata.region}</span> : null}
-                          <span>{game.launchCount} запуск.</span>
-                        </div>
-                        <div className="game-card-footer">
-                          <span className={getStatusChipClass(gameStatusTone)}>{gameStatusLabel}</span>
-                          {game.metadata.releaseYear ? <span className="game-card-badge">{game.metadata.releaseYear}</span> : null}
-                          {game.metadata.region ? <span className="game-card-badge">{game.metadata.region}</span> : null}
-                        </div>
+                        <span className="game-card-subtitle">{formatPlatform(game.platform)}</span>
                       </div>
                     </button>
                   );
@@ -4382,58 +4834,99 @@ function App() {
                   )}
                 </div>
                 <div className="hero-copy">
-                  <span className="eyebrow">Выбранная игра</span>
-                  <h2>{selectedGame.title}</h2>
+                  <span className="eyebrow">{formatPlatform(selectedGame.platform)}</span>
+                  <div className="hero-title-row">
+                    <h2>{selectedGame.title}</h2>
+                    <span className="chip neutral">{formatLaunchCountLabel(selectedGame.launchCount)}</span>
+                  </div>
                   <div className="hero-actions">
                     <button className="primary-action" disabled={(!canLaunchSelectedGame && !canConfigureSelectedGame) || isPlayerLoading} onClick={() => void handleLaunchGame()}>
                       {selectedGameActionLabel}
+                    </button>
+                    <button
+                      className={netplayPanelOpen ? 'secondary-action active-binding' : 'secondary-action'}
+                      onClick={() => setNetplayPanelOpen((current) => !current)}
+                    >
+                      Онлайн
                     </button>
                     <button className="secondary-action danger-action" onClick={() => void handleRemoveGame()}>
                       Удалить из библиотеки
                     </button>
                   </div>
-                </div>
-              </section>
-
-              <section className="detail-grid">
-                <article className="panel detail-card netplay-card">
-                  <div className="panel-header">
-                    <span className="eyebrow">Онлайн</span>
-                    <span className={isNetplayConnected ? 'chip success' : 'chip neutral'}>{isNetplayConnected ? 'Подключен' : 'Оффлайн'}</span>
-                  </div>
-                  <div className="settings-grid">
-                    <div className="setting-card">
-                      <div className="info-stack">
-                        <div className="info-line"><span>Сервер</span><strong className="small-strong">{isNetplayConnected ? 'Подключен' : 'Оффлайн'}</strong></div>
-                        <div className="info-line"><span>Комната</span><strong className="small-strong">{netplayRoom ? netplayRoom.gameTitle : 'Не создана'}</strong></div>
-                        <div className="info-line"><span>Приглашения</span><strong className="small-strong">{netplayInvites.length}</strong></div>
+                  {netplayPanelOpen ? (
+                    <section className="panel hero-online-panel">
+                      <div className="panel-header">
+                        <div>
+                          <span className="eyebrow">Онлайн</span>
+                          <h3 className="online-panel-title">Комната</h3>
+                        </div>
+                        <div className="online-panel-chips">
+                          <span className="chip neutral">Стрим от хоста</span>
+                          <span className={isNetplayConnected ? 'chip success' : 'chip neutral'}>
+                            {isNetplayConnected ? 'В сети' : 'Оффлайн'}
+                          </span>
+                        </div>
                       </div>
-                      <div className="inline-actions">
-                        <button
-                          className={isNetplayConnected ? 'switch-toggle active' : 'switch-toggle'}
-                          onClick={() => {
-                            if (!isNetplayConnected) {
-                              handleConnectNetplay();
-                              return;
-                            }
 
-                            setNetplayPanelOpen(true);
-                          }}
-                        >
-                          Онлайн
-                        </button>
-                        {isNetplayConnected || netplayRoom || netplayInvites.length ? (
-                          <button className="secondary-action compact-action" onClick={() => setNetplayPanelOpen(true)}>
-                            Меню комнаты
+                      {!selectedGameNetplaySupported && !netplayRoom ? (
+                        <p className="hint-text">Для этой игры онлайн пока не подключен. Сейчас стриминг от хоста работает для NES, SNES и Mega Drive.</p>
+                      ) : null}
+
+                      {!isNetplayConnected ? (
+                        <div className="inline-actions">
+                          <button className="primary-action compact-action" onClick={() => handleConnectNetplay()}>
+                            Войти в онлайн
                           </button>
-                        ) : null}
-                      </div>
-                      <p className="hint-text">
-                        Нажмите `Онлайн`, и справа откроется меню комнаты. Там можно создать комнату, принять приглашение и управлять запуском.
-                      </p>
-                    </div>
-                  </div>
-                </article>
+                        </div>
+                      ) : null}
+
+                      {isNetplayConnected && !netplayRoom && selectedGameNetplaySupported ? (
+                        <>
+                          <div className="inline-actions">
+                            <button className="primary-action compact-action" disabled={!canCreateNetplayRoom} onClick={() => handleCreateNetplayRoom()}>
+                              Создать комнату
+                            </button>
+                            <button className="secondary-action compact-action" onClick={() => handleDisconnectNetplay()}>
+                              Выйти из онлайна
+                            </button>
+                          </div>
+                          <p className="hint-text">Комната запускает стрим от хоста. Второй игрок получает видео и управляет игрой удаленно.</p>
+                        </>
+                      ) : null}
+
+                      {netplayRoom ? (
+                        <>
+                          <div className="online-room-summary">
+                            <div className="online-room-item">
+                              <span>Игроков</span>
+                              <strong>{netplayRoom.members.length} / 2</strong>
+                            </div>
+                            <div className="online-room-item">
+                              <span>Платформа</span>
+                              <strong>{formatPlatform(netplayRoom.platform)}</strong>
+                            </div>
+                          </div>
+                          <p className="hint-text">{netplaySyncStatus}</p>
+                          <div className="inline-actions">
+                            <button className={currentNetplayMember?.ready ? 'switch-toggle active' : 'switch-toggle'} onClick={() => handleNetplayReadyToggle()}>
+                              {currentNetplayMember?.ready ? 'Готов' : 'Не готов'}
+                            </button>
+                            {isNetplayHost ? (
+                              <button className="primary-action compact-action" onClick={() => handleNetplayLaunchRoom()}>
+                                Запустить
+                              </button>
+                            ) : null}
+                            <button className="secondary-action compact-action" onClick={() => handleNetplayLeaveRoom()}>
+                              Выйти
+                            </button>
+                          </div>
+                        </>
+                      ) : null}
+
+                      {netplayError ? <p className="hint-text">{netplayError}</p> : null}
+                    </section>
+                  ) : null}
+                </div>
               </section>
 
               {libraryControlsOpen ? (
