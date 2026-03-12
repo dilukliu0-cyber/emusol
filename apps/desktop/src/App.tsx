@@ -720,6 +720,7 @@ function App() {
   const [netplayRoom, setNetplayRoom] = useState<NetplayRoom | null>(null);
   const [netplayInvites, setNetplayInvites] = useState<NetplayInvite[]>([]);
   const [netplayError, setNetplayError] = useState<string | null>(null);
+  const [netplayPanelOpen, setNetplayPanelOpen] = useState(false);
   const [activeNetplaySession, setActiveNetplaySession] = useState<ActiveNetplaySession | null>(null);
   const [pendingNetplayLaunchRoom, setPendingNetplayLaunchRoom] = useState<NetplayRoom | null>(null);
   const [netplaySyncStatus, setNetplaySyncStatus] = useState('Ожидание online-сеанса.');
@@ -800,7 +801,7 @@ function App() {
   }, [sortMenuOpen]);
 
   useEffect(() => {
-    if (!accountMenuOpen && !settingsModalOpen && !libraryControlsOpen) {
+    if (!accountMenuOpen && !settingsModalOpen && !libraryControlsOpen && !netplayPanelOpen) {
       return undefined;
     }
 
@@ -817,6 +818,13 @@ function App() {
         event.preventDefault();
         event.stopPropagation();
         setLibraryControlsOpen(false);
+        return;
+      }
+
+      if (netplayPanelOpen) {
+        event.preventDefault();
+        event.stopPropagation();
+        setNetplayPanelOpen(false);
         return;
       }
 
@@ -839,7 +847,7 @@ function App() {
     return () => {
       window.removeEventListener('keydown', handleGlobalEscape, true);
     };
-  }, [accountMenuOpen, activePlayer, libraryControlsOpen, rebindingAction, settingsModalOpen]);
+  }, [accountMenuOpen, activePlayer, libraryControlsOpen, netplayPanelOpen, rebindingAction, settingsModalOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1075,6 +1083,12 @@ function App() {
   const canCreateNetplayRoom = Boolean(isNetplayConnected && selectedGame && selectedGameNetplaySupported && canLaunchSelectedGame && !activePlayer && !netplayRoom);
   const activeInvite = netplayInvites[0] ?? null;
   const additionalInviteCount = Math.max(0, netplayInvites.length - 1);
+
+  useEffect(() => {
+    if (isNetplayConnected || netplayRoom || activeInvite) {
+      setNetplayPanelOpen(true);
+    }
+  }, [activeInvite, isNetplayConnected, netplayRoom]);
 
   useEffect(() => {
     if (visiblePauseTabs.some((tab) => tab.id === pauseTab)) {
@@ -2736,6 +2750,7 @@ function App() {
     setNetplayError(null);
     setNetplayInvites([]);
     setNetplayRoom(null);
+    setNetplayPanelOpen(true);
     resetNetplaySyncState();
 
     const client = createNetplayClient({
@@ -2901,6 +2916,7 @@ function App() {
     netplayClientRef.current?.disconnect();
     netplayClientRef.current = null;
     setIsNetplayConnected(false);
+    setNetplayPanelOpen(false);
     setNetplayUsers([]);
     setNetplayRoom(null);
     setNetplayInvites([]);
@@ -3958,6 +3974,131 @@ function App() {
         </>
       ) : null}
 
+      {netplayPanelOpen && !activePlayer ? (
+        <>
+          <button className="screen-dim netplay-panel-dim" aria-label="Закрыть онлайн-меню" onClick={() => setNetplayPanelOpen(false)} />
+          <aside className="panel netplay-drawer">
+            <div className="panel-header">
+              <div>
+                <span className="eyebrow">Онлайн</span>
+                <h3 className="settings-title">Комната и сеть</h3>
+              </div>
+              <button className="secondary-action compact-action" onClick={() => setNetplayPanelOpen(false)}>
+                Закрыть
+              </button>
+            </div>
+
+            <div className="settings-grid">
+              <div className="setting-card">
+                <span className="eyebrow">Сервер</span>
+                <div className="info-stack">
+                  <div className="info-line"><span>Статус</span><strong className="small-strong">{isNetplayConnected ? 'Подключен' : 'Оффлайн'}</strong></div>
+                  <div className="info-line"><span>Основной URL</span><strong className="small-strong">{signalingUrl}</strong></div>
+                  <div className="info-line"><span>Ваш ID</span><strong className="small-strong">{selfNetplayUserId}</strong></div>
+                </div>
+                <div className="inline-actions">
+                  {!isNetplayConnected ? (
+                    <button className="primary-action compact-action" onClick={() => handleConnectNetplay()}>
+                      Подключиться
+                    </button>
+                  ) : null}
+                  {canCreateNetplayRoom ? (
+                    <button className="primary-action compact-action" onClick={() => handleCreateNetplayRoom()}>
+                      Создать комнату
+                    </button>
+                  ) : null}
+                  {isNetplayConnected ? (
+                    <button className="secondary-action compact-action" onClick={() => handleDisconnectNetplay()}>
+                      Выйти из онлайна
+                    </button>
+                  ) : null}
+                </div>
+                <p className="hint-text">
+                  {selectedGameNetplaySupported
+                    ? 'Выберите игру, включите онлайн и создайте комнату. Сейчас игровой online поддержан для NES, SNES и Mega Drive.'
+                    : 'Онлайн и комнаты уже работают, но живая игровая синхронизация сейчас доведена только для NES, SNES и Mega Drive.'}
+                </p>
+              </div>
+
+              {netplayInvites.length ? (
+                <div className="setting-card">
+                  <span className="eyebrow">Приглашения</span>
+                  <div className="invite-list">
+                    {netplayInvites.map((invite) => (
+                      <div key={invite.id} className="invite-row">
+                        <div className="invite-copy">
+                          <strong>{invite.fromDisplayName}</strong>
+                          <span>{invite.gameTitle} | {invite.platform}</span>
+                        </div>
+                        <div className="inline-actions">
+                          <button className="primary-action compact-action" onClick={() => handleJoinInvite(invite)}>
+                            Принять
+                          </button>
+                          <button className="secondary-action compact-action" onClick={() => handleDismissInvite(invite.id)}>
+                            Отклонить
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {netplayRoom ? (
+                <div className="setting-card">
+                  <div className="panel-header">
+                    <span className="eyebrow">Комната</span>
+                    <span className="chip neutral">{netplayRoom.gameTitle}</span>
+                  </div>
+                  <div className="info-stack">
+                    <div className="info-line"><span>ID</span><strong className="small-strong">{netplayRoom.id}</strong></div>
+                    <div className="info-line"><span>Платформа</span><strong className="small-strong">{netplayRoom.platform}</strong></div>
+                    <div className="info-line"><span>Игроков</span><strong className="small-strong">{netplayRoom.members.length} / 2</strong></div>
+                    {currentNetplayMember ? (
+                      <div className="info-line">
+                        <span>Ваша роль</span>
+                        <strong className="small-strong">{currentNetplayMember.isHost ? 'Хост | Игрок 1' : 'Гость | Игрок 2'}</strong>
+                      </div>
+                    ) : null}
+                    <div className="info-line"><span>Синхрон</span><strong className="small-strong">{netplaySyncStatus}</strong></div>
+                  </div>
+                  <div className="room-member-list">
+                    {netplayRoom.members.map((member) => (
+                      <div key={member.userId} className="room-member-row">
+                        <strong>{member.displayName}</strong>
+                        <span className={member.ready ? 'chip success' : 'chip neutral'}>
+                          {member.isHost ? 'Хост' : 'Гость'} | {member.ready ? 'Готов' : 'Ждет'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="inline-actions">
+                    <button className={currentNetplayMember?.ready ? 'switch-toggle active' : 'switch-toggle'} onClick={() => handleNetplayReadyToggle()}>
+                      {currentNetplayMember?.ready ? 'Готов' : 'Не готов'}
+                    </button>
+                    {isNetplayHost ? (
+                      <button className="primary-action compact-action" onClick={() => handleNetplayLaunchRoom()}>
+                        Запустить игру
+                      </button>
+                    ) : null}
+                    <button className="secondary-action compact-action" onClick={() => handleNetplayLeaveRoom()}>
+                      Выйти из комнаты
+                    </button>
+                  </div>
+                </div>
+              ) : isNetplayConnected ? (
+                <div className="setting-card">
+                  <span className="eyebrow">Комната</span>
+                  <p className="hint-text">Вы в онлайне. Теперь выберите игру и нажмите `Создать комнату`.</p>
+                </div>
+              ) : null}
+
+              {netplayError ? <p className="hint-text">{netplayError}</p> : null}
+            </div>
+          </aside>
+        </>
+      ) : null}
+
       <input ref={avatarInputRef} hidden type="file" accept="image/*" onChange={handleAvatarChange} />
 
       <div className="switch-layout">
@@ -4262,100 +4403,35 @@ function App() {
                   </div>
                   <div className="settings-grid">
                     <div className="setting-card">
-                      <span className="eyebrow">Сервер</span>
                       <div className="info-stack">
-                        <div className="info-line"><span>Основной URL</span><strong className="small-strong">{signalingUrl}</strong></div>
-                        <div className="info-line"><span>Изменение</span><strong className="small-strong">Только в настройках</strong></div>
+                        <div className="info-line"><span>Сервер</span><strong className="small-strong">{isNetplayConnected ? 'Подключен' : 'Оффлайн'}</strong></div>
+                        <div className="info-line"><span>Комната</span><strong className="small-strong">{netplayRoom ? netplayRoom.gameTitle : 'Не создана'}</strong></div>
+                        <div className="info-line"><span>Приглашения</span><strong className="small-strong">{netplayInvites.length}</strong></div>
                       </div>
                       <div className="inline-actions">
-                        {isNetplayConnected ? (
-                          <button className="secondary-action compact-action" onClick={() => handleDisconnectNetplay()}>
-                            Отключить
-                          </button>
-                        ) : (
-                          <button className="primary-action compact-action" onClick={() => handleConnectNetplay()}>
-                            Подключить
-                          </button>
-                        )}
-                        {canCreateNetplayRoom ? (
-                          <button className="secondary-action compact-action" onClick={() => handleCreateNetplayRoom()}>
-                            Создать комнату
+                        <button
+                          className={isNetplayConnected ? 'switch-toggle active' : 'switch-toggle'}
+                          onClick={() => {
+                            if (!isNetplayConnected) {
+                              handleConnectNetplay();
+                              return;
+                            }
+
+                            setNetplayPanelOpen(true);
+                          }}
+                        >
+                          Онлайн
+                        </button>
+                        {isNetplayConnected || netplayRoom || netplayInvites.length ? (
+                          <button className="secondary-action compact-action" onClick={() => setNetplayPanelOpen(true)}>
+                            Меню комнаты
                           </button>
                         ) : null}
                       </div>
                       <p className="hint-text">
-                        {selectedGameNetplaySupported
-                          ? 'Основной Cloudflare-сервер включен по умолчанию. Первая игровая версия online сейчас работает для NES, SNES и Mega Drive.'
-                          : 'Основной Cloudflare-сервер включен по умолчанию. Комнаты и инвайты уже работают, но игровая online-синхронизация пока доведена только для NES, SNES и Mega Drive.'}
+                        Нажмите `Онлайн`, и справа откроется меню комнаты. Там можно создать комнату, принять приглашение и управлять запуском.
                       </p>
                     </div>
-                    {netplayInvites.length ? (
-                      <div className="setting-card">
-                        <span className="eyebrow">Инвайты</span>
-                        <div className="invite-list">
-                          {netplayInvites.map((invite) => (
-                            <div key={invite.id} className="invite-row">
-                              <div className="invite-copy">
-                                <strong>{invite.fromDisplayName}</strong>
-                                <span>{invite.gameTitle} | {invite.platform}</span>
-                              </div>
-                              <div className="inline-actions">
-                                <button className="primary-action compact-action" onClick={() => handleJoinInvite(invite)}>
-                                  Принять
-                                </button>
-                                <button className="secondary-action compact-action" onClick={() => handleDismissInvite(invite.id)}>
-                                  Отклонить
-                                </button>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
-                    {netplayRoom ? (
-                      <div className="setting-card">
-                        <div className="panel-header">
-                          <span className="eyebrow">Комната</span>
-                          <span className="chip neutral">{netplayRoom.gameTitle}</span>
-                        </div>
-                        <div className="info-stack">
-                          <div className="info-line"><span>ID</span><strong className="small-strong">{netplayRoom.id}</strong></div>
-                          <div className="info-line"><span>Платформа</span><strong className="small-strong">{netplayRoom.platform}</strong></div>
-                          <div className="info-line"><span>Участников</span><strong className="small-strong">{netplayRoom.members.length} / 2</strong></div>
-                          {currentNetplayMember ? (
-                            <div className="info-line">
-                              <span>Ваша роль</span>
-                              <strong className="small-strong">{currentNetplayMember.isHost ? 'Хост | Игрок 1' : 'Гость | Игрок 2'}</strong>
-                            </div>
-                          ) : null}
-                          <div className="info-line"><span>Синхрон</span><strong className="small-strong">{netplaySyncStatus}</strong></div>
-                        </div>
-                        <div className="room-member-list">
-                          {netplayRoom.members.map((member) => (
-                            <div key={member.userId} className="room-member-row">
-                              <strong>{member.displayName}</strong>
-                              <span className={member.ready ? 'chip success' : 'chip neutral'}>
-                                {member.isHost ? 'Хост' : 'Гость'} | {member.ready ? 'Готов' : 'Не готов'}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                        <div className="inline-actions">
-                          <button className={currentNetplayMember?.ready ? 'switch-toggle active' : 'switch-toggle'} onClick={() => handleNetplayReadyToggle()}>
-                            {currentNetplayMember?.ready ? 'Готов' : 'Не готов'}
-                          </button>
-                          {isNetplayHost ? (
-                            <button className="primary-action compact-action" onClick={() => handleNetplayLaunchRoom()}>
-                              Запустить игру
-                            </button>
-                          ) : null}
-                          <button className="secondary-action compact-action" onClick={() => handleNetplayLeaveRoom()}>
-                            Выйти
-                          </button>
-                        </div>
-                      </div>
-                    ) : null}
-                    {netplayError ? <p className="hint-text">{netplayError}</p> : null}
                   </div>
                 </article>
               </section>

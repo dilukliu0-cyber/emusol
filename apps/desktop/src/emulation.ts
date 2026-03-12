@@ -207,31 +207,62 @@ const aspectRatioToRetroArchValue = (value: EmbeddedLaunchPayload['preferences']
   }
 };
 
+const INTERNAL_PLAYER_BINDINGS = {
+  1: {
+    up: 'up',
+    down: 'down',
+    left: 'left',
+    right: 'right',
+    a: 'x',
+    b: 'z',
+    x: 's',
+    y: 'a',
+    l: 'q',
+    r: 'w',
+    start: 'enter',
+    select: 'rshift'
+  },
+  2: {
+    up: 'i',
+    down: 'k',
+    left: 'j',
+    right: 'l',
+    a: 'u',
+    b: 'y',
+    x: 'o',
+    y: 't',
+    l: 'r',
+    r: 'p',
+    start: '1',
+    select: '2'
+  }
+} as const;
+
 const buildControlConfig = () => ({
-  input_player1_up: 'nul',
-  input_player1_down: 'nul',
-  input_player1_left: 'nul',
-  input_player1_right: 'nul',
-  input_player1_a: 'nul',
-  input_player1_b: 'nul',
-  input_player1_x: 'nul',
-  input_player1_y: 'nul',
-  input_player1_l: 'nul',
-  input_player1_r: 'nul',
-  input_player1_start: 'nul',
-  input_player1_select: 'nul',
-  input_player2_up: 'nul',
-  input_player2_down: 'nul',
-  input_player2_left: 'nul',
-  input_player2_right: 'nul',
-  input_player2_a: 'nul',
-  input_player2_b: 'nul',
-  input_player2_x: 'nul',
-  input_player2_y: 'nul',
-  input_player2_l: 'nul',
-  input_player2_r: 'nul',
-  input_player2_start: 'nul',
-  input_player2_select: 'nul'
+  input_player1_up: INTERNAL_PLAYER_BINDINGS[1].up,
+  input_player1_down: INTERNAL_PLAYER_BINDINGS[1].down,
+  input_player1_left: INTERNAL_PLAYER_BINDINGS[1].left,
+  input_player1_right: INTERNAL_PLAYER_BINDINGS[1].right,
+  input_player1_a: INTERNAL_PLAYER_BINDINGS[1].a,
+  input_player1_b: INTERNAL_PLAYER_BINDINGS[1].b,
+  input_player1_x: INTERNAL_PLAYER_BINDINGS[1].x,
+  input_player1_y: INTERNAL_PLAYER_BINDINGS[1].y,
+  input_player1_l: INTERNAL_PLAYER_BINDINGS[1].l,
+  input_player1_r: INTERNAL_PLAYER_BINDINGS[1].r,
+  input_player1_start: INTERNAL_PLAYER_BINDINGS[1].start,
+  input_player1_select: INTERNAL_PLAYER_BINDINGS[1].select,
+  input_player2_up: INTERNAL_PLAYER_BINDINGS[2].up,
+  input_player2_down: INTERNAL_PLAYER_BINDINGS[2].down,
+  input_player2_left: INTERNAL_PLAYER_BINDINGS[2].left,
+  input_player2_right: INTERNAL_PLAYER_BINDINGS[2].right,
+  input_player2_a: INTERNAL_PLAYER_BINDINGS[2].a,
+  input_player2_b: INTERNAL_PLAYER_BINDINGS[2].b,
+  input_player2_x: INTERNAL_PLAYER_BINDINGS[2].x,
+  input_player2_y: INTERNAL_PLAYER_BINDINGS[2].y,
+  input_player2_l: INTERNAL_PLAYER_BINDINGS[2].l,
+  input_player2_r: INTERNAL_PLAYER_BINDINGS[2].r,
+  input_player2_start: INTERNAL_PLAYER_BINDINGS[2].start,
+  input_player2_select: INTERNAL_PLAYER_BINDINGS[2].select
 });
 
 const createLaunchOptions = (payload: EmbeddedLaunchPayload, canvas: HTMLCanvasElement) => {

@@ -301,6 +301,23 @@ button:disabled {
   color: var(--muted);
 }
 
+.netplay-panel-dim {
+  z-index: 23;
+}
+
+.netplay-drawer {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  bottom: 20px;
+  width: min(460px, calc(100vw - 32px));
+  z-index: 24;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 18px;
+}
+
 .settings-modal {
   position: fixed;
   top: 50%;
@@ -1446,6 +1463,14 @@ textarea::placeholder {
 
   .account-popover {
     top: auto;
+    right: 14px;
+    left: 14px;
+    bottom: 14px;
+    width: auto;
+  }
+
+  .netplay-drawer {
+    top: 14px;
     right: 14px;
     left: 14px;
     bottom: 14px;
