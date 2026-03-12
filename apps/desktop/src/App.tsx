@@ -31,6 +31,7 @@ import type {
   EmulatorProfiles,
   FriendEntry,
   FriendStatus,
+  GameControlBindingsByGameId,
   LibraryGame,
   LaunchGameResult,
   PlatformId,
@@ -98,6 +99,7 @@ const NETPLAY_STATE_HASH_INTERVAL_MS = 5000;
 const NETPLAY_INPUT_FRAME_DELAY = 2;
 const GAMEPAD_DEADZONE = 0.35;
 const DEFAULT_ACCOUNT_ART = `${import.meta.env.BASE_URL}emusol-bird.png`;
+const PINK_THEME_ACCENT = '#ff4fa3';
 
 const defaultProfile: ProfileState = {
   displayName: 'Игрок',
@@ -321,6 +323,74 @@ const controlActionLabels: Record<ControlAction, string> = {
   r: 'R',
   start: 'Start',
   select: 'Select'
+};
+
+type ControlClusterKind = 'dpad' | 'face' | 'row';
+
+interface ControlClusterDefinition {
+  id: string;
+  label: string;
+  kind: ControlClusterKind;
+  actions: ControlAction[];
+}
+
+const CONTROL_LAYOUTS: Record<PlatformId, ControlClusterDefinition[]> = {
+  NES: [
+    { id: 'dpad', label: 'Крестовина', kind: 'dpad', actions: ['up', 'left', 'down', 'right'] },
+    { id: 'face', label: 'Кнопки', kind: 'face', actions: ['b', 'a'] },
+    { id: 'system', label: 'Система', kind: 'row', actions: ['select', 'start'] }
+  ],
+  SNES: [
+    { id: 'dpad', label: 'Крестовина', kind: 'dpad', actions: ['up', 'left', 'down', 'right'] },
+    { id: 'face', label: 'Кнопки', kind: 'face', actions: ['y', 'x', 'b', 'a'] },
+    { id: 'shoulders', label: 'Шифты', kind: 'row', actions: ['l', 'r'] },
+    { id: 'system', label: 'Система', kind: 'row', actions: ['select', 'start'] }
+  ],
+  GB: [
+    { id: 'dpad', label: 'Крестовина', kind: 'dpad', actions: ['up', 'left', 'down', 'right'] },
+    { id: 'face', label: 'Кнопки', kind: 'face', actions: ['b', 'a'] },
+    { id: 'system', label: 'Система', kind: 'row', actions: ['select', 'start'] }
+  ],
+  GBC: [
+    { id: 'dpad', label: 'Крестовина', kind: 'dpad', actions: ['up', 'left', 'down', 'right'] },
+    { id: 'face', label: 'Кнопки', kind: 'face', actions: ['b', 'a'] },
+    { id: 'system', label: 'Система', kind: 'row', actions: ['select', 'start'] }
+  ],
+  GBA: [
+    { id: 'dpad', label: 'Крестовина', kind: 'dpad', actions: ['up', 'left', 'down', 'right'] },
+    { id: 'face', label: 'Кнопки', kind: 'face', actions: ['b', 'a'] },
+    { id: 'shoulders', label: 'Шифты', kind: 'row', actions: ['l', 'r'] },
+    { id: 'system', label: 'Система', kind: 'row', actions: ['select', 'start'] }
+  ],
+  MEGADRIVE: [
+    { id: 'dpad', label: 'Крестовина', kind: 'dpad', actions: ['up', 'left', 'down', 'right'] },
+    { id: 'face', label: 'Кнопки', kind: 'face', actions: ['y', 'x', 'b', 'a'] },
+    { id: 'system', label: 'Система', kind: 'row', actions: ['start'] }
+  ],
+  N64: [
+    { id: 'dpad', label: 'Направление', kind: 'dpad', actions: ['up', 'left', 'down', 'right'] },
+    { id: 'face', label: 'Главные кнопки', kind: 'face', actions: ['x', 'y', 'b', 'a'] },
+    { id: 'shoulders', label: 'Триггеры', kind: 'row', actions: ['l', 'r'] },
+    { id: 'system', label: 'Система', kind: 'row', actions: ['start'] }
+  ],
+  GCN: [
+    { id: 'dpad', label: 'Направление', kind: 'dpad', actions: ['up', 'left', 'down', 'right'] },
+    { id: 'face', label: 'Главные кнопки', kind: 'face', actions: ['x', 'y', 'b', 'a'] },
+    { id: 'shoulders', label: 'Триггеры', kind: 'row', actions: ['l', 'r'] },
+    { id: 'system', label: 'Система', kind: 'row', actions: ['start'] }
+  ],
+  DS: [
+    { id: 'dpad', label: 'Крестовина', kind: 'dpad', actions: ['up', 'left', 'down', 'right'] },
+    { id: 'face', label: 'Кнопки', kind: 'face', actions: ['x', 'y', 'b', 'a'] },
+    { id: 'shoulders', label: 'Шифты', kind: 'row', actions: ['l', 'r'] },
+    { id: 'system', label: 'Система', kind: 'row', actions: ['select', 'start'] }
+  ],
+  '3DS': [
+    { id: 'dpad', label: 'Крестовина', kind: 'dpad', actions: ['up', 'left', 'down', 'right'] },
+    { id: 'face', label: 'Кнопки', kind: 'face', actions: ['x', 'y', 'b', 'a'] },
+    { id: 'shoulders', label: 'Шифты', kind: 'row', actions: ['l', 'r'] },
+    { id: 'system', label: 'Система', kind: 'row', actions: ['select', 'start'] }
+  ]
 };
 
 const GAMEPAD_BUTTON_TO_ACTION: Partial<Record<number, ControlAction>> = {
@@ -629,6 +699,7 @@ function App() {
   const [embeddedPreferencesByPlatform, setEmbeddedPreferencesByPlatform] = useState<EmbeddedPreferencesByPlatform>(
     createDefaultEmbeddedPreferencesByPlatform()
   );
+  const [gameControlBindingsByGameId, setGameControlBindingsByGameId] = useState<GameControlBindingsByGameId>({});
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [friends, setFriends] = useState<FriendEntry[]>([]);
   const [friendsCollapsed, setFriendsCollapsed] = useState(false);
@@ -788,6 +859,7 @@ function App() {
         setFriends(state.friends ?? []);
         setEmulatorProfiles(state.emulatorProfiles ?? createDefaultEmulatorProfiles());
         setEmbeddedPreferencesByPlatform(state.embeddedPreferencesByPlatform ?? createDefaultEmbeddedPreferencesByPlatform());
+        setGameControlBindingsByGameId(state.gameControlBindingsByGameId ?? {});
         setSelectedGameId((current) => current ?? state.library[0]?.id ?? null);
         setStatusText(state.library.length ? 'Библиотека загружена.' : 'Библиотека пуста. Импортируйте первый ROM.');
       } catch (error) {
@@ -966,7 +1038,6 @@ function App() {
   const accountAvatarSrc = profile.avatarDataUrl || DEFAULT_ACCOUNT_ART;
   const hasCustomAvatar = Boolean(profile.avatarDataUrl);
   const selectedGameDescriptor = selectedGame ? getBuiltInPlatformDescriptor(selectedGame.platform) : null;
-  const selectedGameRuntime = selectedGame ? getBuiltInRuntime(selectedGame.platform) : null;
   const activePlayerRuntime = activePlayer ? getBuiltInRuntime(activePlayer.game.platform) : null;
   const selectedGamePalette = selectedGame ? getPlatformPalette(selectedGame.platform) : null;
   const selectedGameEmulatorProfile = selectedGame ? emulatorProfiles[selectedGame.platform] ?? createDefaultEmulatorProfiles()[selectedGame.platform] : null;
@@ -981,9 +1052,15 @@ function App() {
         : 'Подключить 3DS эмулятор'
       : selectedGameDescriptor?.actionLabel ?? 'Платформа позже';
   const preferencePlatform = activePlayer?.game.platform ?? selectedGame?.platform ?? null;
+  const controlTargetGame = activePlayer?.game ?? selectedGame ?? null;
   const currentEmbeddedPreferences = preferencePlatform
     ? embeddedPreferencesByPlatform[preferencePlatform] ?? defaultEmbeddedPreferences()
     : defaultEmbeddedPreferences();
+  const currentControlBindings =
+    controlTargetGame && preferencePlatform
+      ? gameControlBindingsByGameId[controlTargetGame.id] ?? currentEmbeddedPreferences.controlBindings
+      : currentEmbeddedPreferences.controlBindings;
+  const currentControlLayout = controlTargetGame ? CONTROL_LAYOUTS[controlTargetGame.platform] : [];
   const visiblePauseTabs = activePlayer && supportsLiveDualScreenLayout(activePlayer.game.platform) ? pauseTabs : pauseTabs.filter((tab) => tab.id !== 'screens');
   const onlineUsers = useMemo(
     () =>
@@ -995,7 +1072,9 @@ function App() {
   const currentNetplayMember = netplayRoom?.members.find((member) => member.userId === selfNetplayUserId) ?? null;
   const isNetplayHost = netplayRoom?.hostUserId === selfNetplayUserId;
   const selectedGameNetplaySupported = selectedGame ? supportsExperimentalNetplayPlatform(selectedGame.platform) : false;
-  const canCreateNetplayRoom = Boolean(isNetplayConnected && selectedGame && selectedGameNetplaySupported && canLaunchSelectedGame && !activePlayer);
+  const canCreateNetplayRoom = Boolean(isNetplayConnected && selectedGame && selectedGameNetplaySupported && canLaunchSelectedGame && !activePlayer && !netplayRoom);
+  const activeInvite = netplayInvites[0] ?? null;
+  const additionalInviteCount = Math.max(0, netplayInvites.length - 1);
 
   useEffect(() => {
     if (visiblePauseTabs.some((tab) => tab.id === pauseTab)) {
@@ -1181,7 +1260,7 @@ function App() {
 
   const applyLocalNetplayInput = (payload: NetplayInputSignalPayload) => {
     const instance = playerInstanceRef.current;
-    const localPlayerIndex = 1;
+    const localPlayerIndex = getActiveLocalPlayerIndex();
 
     if (!instance) {
       return;
@@ -1269,7 +1348,7 @@ function App() {
     }
 
     pressedActionsRef.current.add(action);
-    const localPlayerIndex = 1;
+    const localPlayerIndex = getActiveLocalPlayerIndex();
 
     try {
       playerInstanceRef.current?.pressDown({ button: action, player: localPlayerIndex });
@@ -1318,7 +1397,7 @@ function App() {
 
     pressedActionsRef.current.delete(action);
 
-    const localPlayerIndex = 1;
+    const localPlayerIndex = getActiveLocalPlayerIndex();
 
     try {
       playerInstanceRef.current?.pressUp({ button: action, player: localPlayerIndex });
@@ -1334,14 +1413,7 @@ function App() {
     }
 
     const basePreferences = embeddedPreferencesByPlatform[platform] ?? defaultEmbeddedPreferences();
-    const nextPreferences: EmbeddedPreferences = {
-      ...basePreferences,
-      ...patch,
-      controlBindings: {
-        ...basePreferences.controlBindings,
-        ...(patch.controlBindings ?? {})
-      }
-    };
+    const nextPreferences: EmbeddedPreferences = { ...basePreferences, ...patch };
 
     setEmbeddedPreferencesByPlatform((current) => ({
       ...current,
@@ -1351,15 +1423,15 @@ function App() {
       current && current.game.platform === platform
         ? {
             ...current,
-            preferences: nextPreferences
+            preferences: {
+              ...nextPreferences,
+              controlBindings: current.preferences.controlBindings
+            }
           }
         : current
     );
 
     if (!bridge) {
-      if (patch.controlBindings && activePlayer && activePlayerRuntime === 'emulatorjs' && activePlayer.game.platform === platform) {
-        void sendPlayerFrameCommand('set-control-bindings', { controlBindings: nextPreferences.controlBindings }).catch(() => undefined);
-      }
       return nextPreferences;
     }
 
@@ -1370,16 +1442,75 @@ function App() {
       current && current.game.platform === platform
         ? {
             ...current,
-            preferences: resolvedPreferences
+            preferences: {
+              ...resolvedPreferences,
+              controlBindings: current.preferences.controlBindings
+            }
           }
         : current
     );
 
-    if (patch.controlBindings && activePlayer && activePlayerRuntime === 'emulatorjs' && activePlayer.game.platform === platform) {
-      void sendPlayerFrameCommand('set-control-bindings', { controlBindings: resolvedPreferences.controlBindings }).catch(() => undefined);
+    return resolvedPreferences;
+  };
+
+  const saveGameControlBindingPatch = async (patch: Partial<ControlBindings>) => {
+    const game = activePlayer?.game ?? selectedGame;
+    if (!game) {
+      return defaultControlBindings();
     }
 
-    return resolvedPreferences;
+    const platformDefaults = embeddedPreferencesByPlatform[game.platform] ?? defaultEmbeddedPreferences();
+    const baseBindings = gameControlBindingsByGameId[game.id] ?? platformDefaults.controlBindings;
+    const nextBindings: ControlBindings = {
+      ...baseBindings,
+      ...patch
+    };
+
+    setGameControlBindingsByGameId((current) => ({
+      ...current,
+      [game.id]: nextBindings
+    }));
+    setActivePlayer((current) =>
+      current && current.game.id === game.id
+        ? {
+            ...current,
+            preferences: {
+              ...current.preferences,
+              controlBindings: nextBindings
+            }
+          }
+        : current
+    );
+
+    if (!bridge) {
+      if (activePlayer && activePlayerRuntime === 'emulatorjs' && activePlayer.game.id === game.id) {
+        void sendPlayerFrameCommand('set-control-bindings', { controlBindings: nextBindings }).catch(() => undefined);
+      }
+
+      return nextBindings;
+    }
+
+    const saved = await bridge.saveGameControlBindings(game.id, patch);
+    const resolvedBindings = saved[game.id] ?? nextBindings;
+
+    setGameControlBindingsByGameId(saved);
+    setActivePlayer((current) =>
+      current && current.game.id === game.id
+        ? {
+            ...current,
+            preferences: {
+              ...current.preferences,
+              controlBindings: resolvedBindings
+            }
+          }
+        : current
+    );
+
+    if (activePlayer && activePlayerRuntime === 'emulatorjs' && activePlayer.game.id === game.id) {
+      void sendPlayerFrameCommand('set-control-bindings', { controlBindings: resolvedBindings }).catch(() => undefined);
+    }
+
+    return resolvedBindings;
   };
 
   const updateLibraryGame = (updatedGame: LibraryGame) => {
@@ -1494,6 +1625,9 @@ function App() {
     queue.current.set(normalizedFrame, bucket);
   };
 
+  const getActiveLocalPlayerIndex = (): NetplayPlayerIndex =>
+    activeNetplaySessionRef.current?.localPlayerIndex ?? 1;
+
   const releasePressedActions = () => {
     localNetplayInputQueueRef.current.clear();
     remoteNetplayInputQueueRef.current.clear();
@@ -1517,7 +1651,7 @@ function App() {
     }
 
     const instance = playerInstanceRef.current;
-    const localPlayerIndex = activeNetplaySessionRef.current?.localPlayerIndex ?? 1;
+    const localPlayerIndex = getActiveLocalPlayerIndex();
 
     for (const action of pressedActionsRef.current) {
       try {
@@ -2170,10 +2304,8 @@ function App() {
           return;
         }
 
-        void saveEmbeddedPreferencePatch({
-          controlBindings: {
-            [rebindingAction]: nextBinding
-          } as Partial<ControlBindings> as ControlBindings
+        void saveGameControlBindingPatch({
+          [rebindingAction]: nextBinding
         }).then(() => {
           setStatusText(`Кнопка ${controlActionLabels[rebindingAction]} назначена на ${formatBindingLabel(nextBinding)}.`);
           setRebindingAction(null);
@@ -2210,7 +2342,7 @@ function App() {
         }
       } else if (canHandleDirectInput) {
         const mappedBinding = keyboardEventToRetroArchKey(event);
-        const mappedAction = mappedBinding ? getControlActionForBinding(currentEmbeddedPreferences.controlBindings, mappedBinding) : null;
+        const mappedAction = mappedBinding ? getControlActionForBinding(currentControlBindings, mappedBinding) : null;
 
         if (mappedAction) {
           event.preventDefault();
@@ -2243,7 +2375,7 @@ function App() {
       }
 
       const mappedBinding = keyboardEventToRetroArchKey(event);
-      const mappedAction = mappedBinding ? getControlActionForBinding(currentEmbeddedPreferences.controlBindings, mappedBinding) : null;
+      const mappedAction = mappedBinding ? getControlActionForBinding(currentControlBindings, mappedBinding) : null;
 
       if (!mappedAction) {
         return;
@@ -2262,7 +2394,7 @@ function App() {
       window.removeEventListener('keydown', handleKeyDown, true);
       window.removeEventListener('keyup', handleKeyUp, true);
     };
-  }, [activePlayer, activePlayerRuntime, pauseMenuOpen, rebindingAction, currentEmbeddedPreferences, activePlayer?.game.id]);
+  }, [activePlayer, activePlayerRuntime, pauseMenuOpen, rebindingAction, currentControlBindings, currentEmbeddedPreferences.quickSlot, activePlayer?.game.id]);
 
   useEffect(() => {
     if (activePlayer || !libraryControlsOpen || !selectedGame) {
@@ -2286,10 +2418,8 @@ function App() {
           return;
         }
 
-        void saveEmbeddedPreferencePatch({
-          controlBindings: {
-            [rebindingAction]: nextBinding
-          } as Partial<ControlBindings> as ControlBindings
+        void saveGameControlBindingPatch({
+          [rebindingAction]: nextBinding
         }).then(() => {
           setStatusText(`Кнопка ${controlActionLabels[rebindingAction]} назначена на ${formatBindingLabel(nextBinding)}.`);
           setRebindingAction(null);
@@ -2310,7 +2440,7 @@ function App() {
     return () => {
       window.removeEventListener('keydown', handleKeyDown, true);
     };
-  }, [activePlayer, libraryControlsOpen, rebindingAction, selectedGame?.id, currentEmbeddedPreferences]);
+  }, [activePlayer, libraryControlsOpen, rebindingAction, selectedGame?.id]);
 
   useEffect(() => {
     if (!activePlayer) {
@@ -2361,6 +2491,15 @@ function App() {
 
   const updateProfile = (patch: Partial<ProfileState>) => {
     void saveProfile({ ...profile, ...patch });
+  };
+
+  const applyThemePreset = (theme: ProfileState['theme']) => {
+    if (theme === 'pink' && profile.accentColor === '#ff5548') {
+      updateProfile({ theme, accentColor: PINK_THEME_ACCENT });
+      return;
+    }
+
+    updateProfile({ theme });
   };
 
   const handleFriendDraftChange = <K extends keyof FriendDraft>(key: K, value: FriendDraft[K]) => {
@@ -2458,6 +2597,11 @@ function App() {
 
     const nextLibrary = await bridge.removeGame(selectedGame.id);
     setLibrary(nextLibrary);
+    setGameControlBindingsByGameId((current) => {
+      const next = { ...current };
+      delete next[selectedGame.id];
+      return next;
+    });
     setStatusText(`"${selectedGame.title}" удалена из библиотеки.`);
     setSelectedGameId(nextLibrary[0]?.id ?? null);
   };
@@ -2540,24 +2684,36 @@ function App() {
     resetNetplaySyncState();
 
     const payload = await prepareEmbeddedLaunchWithRecovery(game);
-    if (getBuiltInRuntime(payload.game.platform) === 'emulatorjs') {
+    const resolvedControlBindings =
+      gameControlBindingsByGameId[payload.game.id] ??
+      embeddedPreferencesByPlatform[payload.game.platform]?.controlBindings ??
+      payload.preferences.controlBindings;
+    const resolvedPayload: EmbeddedLaunchPayload = {
+      ...payload,
+      preferences: {
+        ...payload.preferences,
+        controlBindings: resolvedControlBindings
+      }
+    };
+
+    if (getBuiltInRuntime(resolvedPayload.game.platform) === 'emulatorjs') {
       setPlayerFrameSessionId((current) => current + 1);
       setPlayerFrameLoaded(false);
     }
-    setLibrary(payload.library);
-    setSelectedGameId(payload.game.id);
+    setLibrary(resolvedPayload.library);
+    setSelectedGameId(resolvedPayload.game.id);
     setEmbeddedPreferencesByPlatform((current) => ({
       ...current,
       [payload.game.platform]: payload.preferences
     }));
 
-    if (room && supportsExperimentalNetplayPlatform(payload.game.platform)) {
+    if (room && supportsExperimentalNetplayPlatform(resolvedPayload.game.platform)) {
       const localPlayerIndex: NetplayPlayerIndex = room.hostUserId === selfNetplayUserId ? 1 : 2;
       const nextSession: ActiveNetplaySession = {
         roomId: room.id,
-        gameId: payload.game.id,
-        gameTitle: payload.game.title,
-        platform: payload.game.platform,
+        gameId: resolvedPayload.game.id,
+        gameTitle: resolvedPayload.game.title,
+        platform: resolvedPayload.game.platform,
         localPlayerIndex,
         remotePlayerIndex: localPlayerIndex === 1 ? 2 : 1,
         launchMode: 'experimental-relay'
@@ -2570,9 +2726,9 @@ function App() {
       setActiveNetplaySession(null);
     }
 
-    activePlayerRef.current = payload;
-    setActivePlayer(payload);
-    return payload;
+    activePlayerRef.current = resolvedPayload;
+    setActivePlayer(resolvedPayload);
+    return resolvedPayload;
   };
 
   const handleConnectNetplay = () => {
@@ -2616,7 +2772,7 @@ function App() {
       },
       onInvite: (invite) => {
         setNetplayInvites((current) => [invite, ...current.filter((item) => item.id !== invite.id)]);
-        setStatusText(`Инвайт от ${invite.fromDisplayName} в комнату ${invite.gameTitle}.`);
+        setStatusText(`Новое приглашение от ${invite.fromDisplayName} в комнату "${invite.gameTitle}".`);
       },
       onLaunch: (room) => {
         setNetplayRoom(room);
@@ -2774,7 +2930,7 @@ function App() {
 
     netplayClientRef.current.sendInvite(userId, netplayRoom.id);
     const target = onlineUsers.find((user) => user.userId === userId);
-    setStatusText(`Инвайт отправлен${target ? `: ${target.displayName}` : ''}.`);
+    setStatusText(`Приглашение отправлено${target ? `: ${target.displayName}` : ''}.`);
   };
 
   const handleJoinInvite = (invite: NetplayInvite) => {
@@ -2789,11 +2945,12 @@ function App() {
 
     netplayClientRef.current.joinRoom(invite.roomId);
     setNetplayInvites((current) => current.filter((item) => item.id !== invite.id));
-    setStatusText(`Подключаюсь к комнате ${invite.gameTitle}.`);
+    setStatusText(`Подключаюсь к комнате "${invite.gameTitle}".`);
   };
 
   const handleDismissInvite = (inviteId: string) => {
     setNetplayInvites((current) => current.filter((invite) => invite.id !== inviteId));
+    setStatusText('Приглашение отклонено.');
   };
 
   const handleNetplayReadyToggle = () => {
@@ -2802,6 +2959,7 @@ function App() {
     }
 
     netplayClientRef.current.setReady(!currentNetplayMember.ready);
+    setStatusText(currentNetplayMember.ready ? 'Вы помечены как не готовы.' : 'Вы готовы к запуску.');
   };
 
   const handleNetplayLeaveRoom = () => {
@@ -2824,7 +2982,7 @@ function App() {
     }
 
     netplayClientRef.current.launchRoom();
-    setStatusText('Пытаюсь запустить room-session для обоих игроков.');
+    setStatusText('Запускаю игру для участников комнаты.');
   };
 
   const handleChooseNativeEmulator = async (platform: PlatformId) => {
@@ -2885,6 +3043,7 @@ function App() {
           const state = await bridge.loadState();
           setLibrary(state.library);
           setEmulatorProfiles(state.emulatorProfiles ?? createDefaultEmulatorProfiles());
+          setGameControlBindingsByGameId(state.gameControlBindingsByGameId ?? {});
           setSelectedGameId((current) => current ?? state.library[0]?.id ?? null);
           setStatusText(launchResult.message);
           setIsPlayerLoading(false);
@@ -3170,13 +3329,74 @@ function App() {
   };
 
   const handleResetControls = async () => {
-    await saveEmbeddedPreferencePatch({ controlBindings: defaultControlBindings() });
+    await saveGameControlBindingPatch(defaultControlBindings());
     setRebindingAction(null);
-    setStatusText('Управление сброшено на стандартную раскладку.');
+    setStatusText('Управление для этой игры сброшено на стандартную раскладку.');
   };
 
   const activeConnectedGamepad = connectedGamepads[0] ?? null;
   const supportsEmbeddedVideoControls = activePlayerRuntime === 'emulatorjs' && activePlayer ? supportsLiveVideoSettings(activePlayer.game.platform) : false;
+  const renderControlBindingButton = (action: ControlAction, kind: ControlClusterKind) => {
+    const classes = ['gamepad-binding', `gamepad-binding-${kind}`];
+
+    if (kind === 'dpad') {
+      classes.push(`is-${action}`);
+    }
+
+    if (kind === 'face') {
+      classes.push(`is-face-${action}`);
+    }
+
+    return (
+      <button
+        key={action}
+        className={rebindingAction === action ? `${classes.join(' ')} active-binding` : classes.join(' ')}
+        onClick={() => {
+          setRebindingAction(action);
+          setStatusText(`Нажмите новую клавишу для ${controlActionLabels[action]}.`);
+        }}
+      >
+        <span className="gamepad-binding-label">{controlActionLabels[action]}</span>
+        <strong className="gamepad-binding-value">
+          {rebindingAction === action ? 'Нажмите клавишу...' : formatBindingLabel(currentControlBindings[action])}
+        </strong>
+      </button>
+    );
+  };
+
+  const renderControlsEditor = (game: LibraryGame) => (
+    <div className="pause-section">
+      <p className="hint-text">
+        Нажмите на кнопку ниже, затем новую клавишу. Раскладка применяется сразу и сохраняется только для игры «{game.title}».
+      </p>
+      <div className="inline-actions">
+        <button className="secondary-action compact-action" onClick={() => void handleResetControls()}>
+          Сбросить по умолчанию
+        </button>
+      </div>
+      <div className="runtime-note">
+        <strong>{activeConnectedGamepad ? `Геймпад: ${activeConnectedGamepad.id}` : 'Геймпад не подключен'}</strong>
+        <p className="hint-text">
+          {activeConnectedGamepad
+            ? 'Первый подключенный геймпад уже работает. Здесь вы меняете именно клавиатурную раскладку для этой игры.'
+            : 'Подключите геймпад для игры с контроллера. Здесь можно отдельно настроить клавиатуру для этой игры.'}
+        </p>
+      </div>
+      <div className="gamepad-layout">
+        {currentControlLayout.map((cluster) => (
+          <section key={cluster.id} className="gamepad-cluster-card">
+            <div className="gamepad-cluster-header">
+              <span className="eyebrow">{cluster.label}</span>
+              <span className="chip neutral">{cluster.actions.length}</span>
+            </div>
+            <div className={`gamepad-cluster gamepad-cluster-${cluster.kind}`}>
+              {cluster.actions.map((action) => renderControlBindingButton(action, cluster.kind))}
+            </div>
+          </section>
+        ))}
+      </div>
+    </div>
+  );
 
   if (isLoading) {
     return <div className="app-shell"><section className="panel loading-card">Загрузка Emusol...</section></div>;
@@ -3265,56 +3485,7 @@ function App() {
               </div>
 
               {pauseTab === 'controls' ? (
-                <div className="pause-section">
-                  {activePlayerRuntime === 'nostalgist' || activePlayerRuntime === 'emulatorjs' ? (
-                    <>
-                      <p className="hint-text">
-                        Нажмите на кнопку ниже, затем нажмите новую клавишу. Новая раскладка применяется сразу в текущей игре и сохраняется для следующих запусков.
-                      </p>
-                      <div className="inline-actions">
-                        <button className="secondary-action compact-action" onClick={() => void handleResetControls()}>
-                          Сбросить по умолчанию
-                        </button>
-                      </div>
-                      <div className="runtime-note">
-                        <strong>{activeConnectedGamepad ? `Геймпад: ${activeConnectedGamepad.id}` : 'Геймпад не подключен'}</strong>
-                        <p className="hint-text">
-                          {activeConnectedGamepad
-                            ? 'Локальный геймпад уже работает для встроенных ретро-ядер. В онлайн-сеансе его нажатия тоже уходят в вашу роль игрока.'
-                            : 'Подключите геймпад, и Emusol автоматически возьмет первый подключенный контроллер для локальной игры и онлайн-сеанса.'}
-                        </p>
-                      </div>
-                      <div className="control-grid">
-                        {(Object.keys(controlActionLabels) as ControlAction[]).map((action) => (
-                          <div key={action} className="control-row">
-                            <span>{controlActionLabels[action]}</span>
-                            <button
-                              className={rebindingAction === action ? 'secondary-action active-binding' : 'secondary-action'}
-                              onClick={() => {
-                                setRebindingAction(action);
-                                setStatusText(`Нажмите новую клавишу для ${controlActionLabels[action]}.`);
-                              }}
-                            >
-                              {rebindingAction === action ? 'Нажмите клавишу...' : formatBindingLabel(currentEmbeddedPreferences.controlBindings[action])}
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </>
-                  ) : (
-                    <div className="runtime-note">
-                      <strong>Геймпад и управление для {formatPlatform(activePlayer.game.platform)}</strong>
-                      <p className="hint-text">
-                        Для {formatPlatform(activePlayer.game.platform)} сейчас используется встроенный рантайм EmulatorJS. Его нативные события клавиатуры и геймпада проходят прямо в player, а Emusol сверху добавляет Esc, F5 и F8.
-                      </p>
-                      <p className="hint-text">
-                        {activeConnectedGamepad
-                          ? `Сейчас подключен: ${activeConnectedGamepad.id}.`
-                          : 'Подключите геймпад до запуска игры, если хотите использовать контроллер в N64 или DS.'}
-                      </p>
-                    </div>
-                  )}
-                </div>
+                renderControlsEditor(activePlayer.game)
               ) : null}
 
               {pauseTab === 'audio' ? (
@@ -3612,11 +3783,14 @@ function App() {
               <div>
                 <label>Тема</label>
                 <div className="toggle-row">
-                  <button className={profile.theme === 'dark' ? 'switch-toggle active' : 'switch-toggle'} onClick={() => updateProfile({ theme: 'dark' })}>
+                  <button className={profile.theme === 'dark' ? 'switch-toggle active' : 'switch-toggle'} onClick={() => applyThemePreset('dark')}>
                     Темная
                   </button>
-                  <button className={profile.theme === 'light' ? 'switch-toggle active' : 'switch-toggle'} onClick={() => updateProfile({ theme: 'light' })}>
+                  <button className={profile.theme === 'light' ? 'switch-toggle active' : 'switch-toggle'} onClick={() => applyThemePreset('light')}>
                     Светлая
+                  </button>
+                  <button className={profile.theme === 'pink' ? 'switch-toggle active' : 'switch-toggle'} onClick={() => applyThemePreset('pink')}>
+                    Розовая
                   </button>
                 </div>
               </div>
@@ -3691,13 +3865,17 @@ function App() {
                 <div className="setting-card">
                   <label>Тема</label>
                   <div className="toggle-row">
-                    <button className={profile.theme === 'dark' ? 'switch-toggle active' : 'switch-toggle'} onClick={() => updateProfile({ theme: 'dark' })}>
+                    <button className={profile.theme === 'dark' ? 'switch-toggle active' : 'switch-toggle'} onClick={() => applyThemePreset('dark')}>
                       Темная
                     </button>
-                    <button className={profile.theme === 'light' ? 'switch-toggle active' : 'switch-toggle'} onClick={() => updateProfile({ theme: 'light' })}>
+                    <button className={profile.theme === 'light' ? 'switch-toggle active' : 'switch-toggle'} onClick={() => applyThemePreset('light')}>
                       Светлая
                     </button>
+                    <button className={profile.theme === 'pink' ? 'switch-toggle active' : 'switch-toggle'} onClick={() => applyThemePreset('pink')}>
+                      Розовая
+                    </button>
                   </div>
+                  <p className="hint-text">Тема и акцент сохраняются локально сразу после выбора.</p>
                 </div>
                 <div className="setting-card">
                   <label>Акцент</label>
@@ -3714,7 +3892,7 @@ function App() {
                 <div className="setting-card">
                   <label>Основной online-сервер</label>
                   <input value={signalingUrl} onChange={(event) => setSignalingUrl(event.target.value)} placeholder={DEFAULT_SIGNALING_URL} />
-                  <p className="hint-text">По умолчанию Emusol использует Cloudflare-сервер. Менять адрес можно только здесь, в настройках сети.</p>
+                  <p className="hint-text">По умолчанию Emusol использует Cloudflare-сервер. Менять адрес можно только здесь, а адрес сохраняется локально на этом устройстве.</p>
                 </div>
                 <div className="setting-card">
                   <span className="eyebrow">Состояние сети</span>
@@ -3750,6 +3928,32 @@ function App() {
                 </div>
               </div>
             ) : null}
+          </section>
+        </>
+      ) : null}
+
+      {activeInvite && !activePlayer ? (
+        <>
+          <button className="screen-dim invite-dim" aria-label="Закрыть приглашение" onClick={() => handleDismissInvite(activeInvite.id)} />
+          <section className="panel invite-modal">
+            <div className="panel-header">
+              <span className="eyebrow">Приглашение</span>
+              <span className="chip success">Онлайн</span>
+            </div>
+            <div className="invite-modal-copy">
+              <h3>{activeInvite.fromDisplayName} приглашает вас</h3>
+              <p>Игра: {activeInvite.gameTitle}</p>
+              <p>Платформа: {formatPlatform(activeInvite.platform)}</p>
+              {additionalInviteCount > 0 ? <span className="chip neutral">Еще приглашений: {additionalInviteCount}</span> : null}
+            </div>
+            <div className="inline-actions">
+              <button className="primary-action compact-action" onClick={() => handleJoinInvite(activeInvite)}>
+                Принять
+              </button>
+              <button className="secondary-action compact-action" onClick={() => handleDismissInvite(activeInvite.id)}>
+                Отклонить
+              </button>
+            </div>
           </section>
         </>
       ) : null}
@@ -3953,12 +4157,12 @@ function App() {
                         <div className={`friend-status-dot ${user.roomId ? 'playing' : 'online'}`} />
                         <div className="friend-meta">
                           <strong>{user.displayName}</strong>
-                          <span>{user.roomId ? 'Играет онлайн' : 'В сети и готов к инвайту'}</span>
+                          <span>{user.roomId ? 'Уже в комнате' : 'В сети и доступен для приглашения'}</span>
                         </div>
                         <div className="friend-actions">
                           {netplayRoom ? (
                             <button className="secondary-action compact-action" onClick={() => handleInviteFriend(user.userId)}>
-                              Инвайт
+                              Пригласить
                             </button>
                           ) : null}
                           <span className="friend-state">{user.roomId ? 'Играет' : 'В сети'}</span>
@@ -4075,7 +4279,7 @@ function App() {
                         )}
                         {canCreateNetplayRoom ? (
                           <button className="secondary-action compact-action" onClick={() => handleCreateNetplayRoom()}>
-                            Создать room
+                            Создать комнату
                           </button>
                         ) : null}
                       </div>
@@ -4097,10 +4301,10 @@ function App() {
                               </div>
                               <div className="inline-actions">
                                 <button className="primary-action compact-action" onClick={() => handleJoinInvite(invite)}>
-                                  Войти
+                                  Принять
                                 </button>
                                 <button className="secondary-action compact-action" onClick={() => handleDismissInvite(invite.id)}>
-                                  Скрыть
+                                  Отклонить
                                 </button>
                               </div>
                             </div>
@@ -4131,18 +4335,18 @@ function App() {
                             <div key={member.userId} className="room-member-row">
                               <strong>{member.displayName}</strong>
                               <span className={member.ready ? 'chip success' : 'chip neutral'}>
-                                {member.isHost ? 'Хост' : 'Гость'} | {member.ready ? 'Готов' : 'Ждет'}
+                                {member.isHost ? 'Хост' : 'Гость'} | {member.ready ? 'Готов' : 'Не готов'}
                               </span>
                             </div>
                           ))}
                         </div>
                         <div className="inline-actions">
                           <button className={currentNetplayMember?.ready ? 'switch-toggle active' : 'switch-toggle'} onClick={() => handleNetplayReadyToggle()}>
-                            {currentNetplayMember?.ready ? 'Готов' : 'Готовность'}
+                            {currentNetplayMember?.ready ? 'Готов' : 'Не готов'}
                           </button>
                           {isNetplayHost ? (
                             <button className="primary-action compact-action" onClick={() => handleNetplayLaunchRoom()}>
-                              Запустить room
+                              Запустить игру
                             </button>
                           ) : null}
                           <button className="secondary-action compact-action" onClick={() => handleNetplayLeaveRoom()}>
@@ -4172,11 +4376,6 @@ function App() {
                         </div>
                       </div>
                       <div className="pause-header-actions">
-                        {selectedGameRuntime === 'nostalgist' || selectedGameRuntime === 'emulatorjs' ? (
-                          <button className="secondary-action compact-action" onClick={() => void handleResetControls()}>
-                            Сбросить по умолчанию
-                          </button>
-                        ) : null}
                         <button className="primary-action compact-action" onClick={() => {
                           setLibraryControlsOpen(false);
                           setRebindingAction(null);
@@ -4186,51 +4385,7 @@ function App() {
                       </div>
                     </div>
 
-                    <div className="pause-section">
-                      {selectedGameRuntime === 'nostalgist' || selectedGameRuntime === 'emulatorjs' ? (
-                        <>
-                          <p className="hint-text">
-                            Нажмите на кнопку ниже, затем нажмите новую клавишу. Раскладка сохранится для платформы и будет использоваться в следующих запусках.
-                          </p>
-                          <div className="runtime-note">
-                            <strong>{activeConnectedGamepad ? `Геймпад: ${activeConnectedGamepad.id}` : 'Геймпад не подключен'}</strong>
-                            <p className="hint-text">
-                              {activeConnectedGamepad
-                                ? 'Первый подключенный геймпад уже работает для встроенных ретро-ядер.'
-                                : 'Подключите геймпад, и Emusol автоматически возьмет первый подключенный контроллер.'}
-                            </p>
-                          </div>
-                          <div className="control-grid">
-                            {(Object.keys(controlActionLabels) as ControlAction[]).map((action) => (
-                              <div key={action} className="control-row">
-                                <span>{controlActionLabels[action]}</span>
-                                <button
-                                  className={rebindingAction === action ? 'secondary-action active-binding' : 'secondary-action'}
-                                  onClick={() => {
-                                    setRebindingAction(action);
-                                    setStatusText(`Нажмите новую клавишу для ${controlActionLabels[action]}.`);
-                                  }}
-                                >
-                                  {rebindingAction === action ? 'Нажмите клавишу...' : formatBindingLabel(currentEmbeddedPreferences.controlBindings[action])}
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        </>
-                      ) : (
-                        <div className="runtime-note">
-                          <strong>Управление для {formatPlatform(selectedGame.platform)}</strong>
-                          <p className="hint-text">
-                            Для {formatPlatform(selectedGame.platform)} сейчас используется встроенный рантайм EmulatorJS. Системные клавиши Emusol работают, а отдельную переназначаемую раскладку для этой платформы я вынесу следующим шагом.
-                          </p>
-                          <p className="hint-text">
-                            {activeConnectedGamepad
-                              ? `Сейчас подключен: ${activeConnectedGamepad.id}.`
-                              : 'Подключите геймпад до запуска игры, если хотите использовать контроллер в N64 или DS.'}
-                          </p>
-                        </div>
-                      )}
-                    </div>
+                    {renderControlsEditor(selectedGame)}
                   </section>
                 </div>
               ) : null}

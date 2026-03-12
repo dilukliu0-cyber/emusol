@@ -3,7 +3,9 @@
 import type {
   AutoSaveSummary,
   AppStatePayload,
+  ControlBindings,
   GameMetadata,
+  GameControlBindingsByGameId,
   EmbeddedLaunchPayload,
   EmbeddedPreferences,
   EmbeddedPreferencesByPlatform,
@@ -32,6 +34,7 @@ interface EmusolBridge {
   saveFriend: (friend: { id?: string; name: string; status: FriendStatus; note: string }) => Promise<FriendEntry[]>;
   removeFriend: (friendId: string) => Promise<FriendEntry[]>;
   saveEmbeddedPreferences: (platform: PlatformId, preferences: Partial<EmbeddedPreferences>) => Promise<EmbeddedPreferencesByPlatform>;
+  saveGameControlBindings: (gameId: string, bindings: Partial<ControlBindings>) => Promise<GameControlBindingsByGameId>;
   importRoms: () => Promise<ImportRomsResult>;
   removeGame: (gameId: string) => Promise<LibraryGame[]>;
   setGameCover: (gameId: string, coverDataUrl?: string, source?: 'none' | 'auto' | 'manual') => Promise<LibraryGame>;

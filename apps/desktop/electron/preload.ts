@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { EmbeddedPreferences, EmulatorProfile, FriendStatus, PlatformId, ProfileState } from './appState';
+import type { ControlBindings, EmbeddedPreferences, EmulatorProfile, FriendStatus, PlatformId, ProfileState } from './appState';
 import type { GameMetadata } from './gameMetadata';
 
 contextBridge.exposeInMainWorld('emusol', {
@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('emusol', {
   removeFriend: async (friendId: string) => ipcRenderer.invoke('friends:remove', friendId),
   saveEmbeddedPreferences: async (platform: PlatformId, preferences: Partial<EmbeddedPreferences>) =>
     ipcRenderer.invoke('embedded:save-preferences', platform, preferences),
+  saveGameControlBindings: async (gameId: string, bindings: Partial<ControlBindings>) =>
+    ipcRenderer.invoke('game:save-control-bindings', gameId, bindings),
   importRoms: async () => ipcRenderer.invoke('library:import-roms'),
   removeGame: async (gameId: string) => ipcRenderer.invoke('library:remove-game', gameId),
   setGameCover: async (gameId: string, coverDataUrl?: string, source?: 'none' | 'auto' | 'manual') =>

@@ -17,6 +17,7 @@ import {
   removeGameFromLibrary,
   saveAutoState,
   saveEmbeddedPreferences,
+  saveGameControlBindings,
   saveFriendEntry,
   saveGameMetadata,
   saveGameStateSlot,
@@ -158,6 +159,7 @@ ipcMain.handle('profile:save', async (_, profile) => saveProfileState(profile));
 ipcMain.handle('friends:save', async (_, friend) => saveFriendEntry(friend));
 ipcMain.handle('friends:remove', async (_, friendId: string) => removeFriendEntry(friendId));
 ipcMain.handle('embedded:save-preferences', async (_, platform: PlatformId, preferences) => saveEmbeddedPreferences(platform, preferences));
+ipcMain.handle('game:save-control-bindings', async (_, gameId: string, bindings) => saveGameControlBindings(gameId, bindings));
 
 ipcMain.handle('library:import-roms', async () => {
   const result = await dialog.showOpenDialog({

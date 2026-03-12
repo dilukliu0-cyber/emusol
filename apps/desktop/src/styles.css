@@ -20,6 +20,16 @@
   --shadow: 0 24px 40px rgba(110, 126, 154, 0.16);
 }
 
+:root[data-theme='pink'] {
+  --bg: #2a0f22;
+  --bg-elevated: rgba(54, 19, 44, 0.92);
+  --bg-soft: rgba(84, 31, 68, 0.78);
+  --panel-border: rgba(255, 195, 231, 0.16);
+  --text: #fff4fb;
+  --muted: #f1b8d8;
+  --shadow: 0 26px 54px rgba(64, 8, 44, 0.34);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -260,6 +270,37 @@ button:disabled {
   gap: 16px;
 }
 
+.invite-dim {
+  z-index: 31;
+}
+
+.invite-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: min(420px, calc(100vw - 28px));
+  transform: translate(-50%, -50%);
+  z-index: 32;
+  display: grid;
+  gap: 16px;
+}
+
+.invite-modal-copy {
+  display: grid;
+  gap: 10px;
+}
+
+.invite-modal-copy h3 {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1.05;
+}
+
+.invite-modal-copy p {
+  margin: 0;
+  color: var(--muted);
+}
+
 .settings-modal {
   position: fixed;
   top: 50%;
@@ -465,6 +506,113 @@ button:disabled {
 
 .control-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.gamepad-layout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.gamepad-cluster-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.gamepad-cluster-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.gamepad-cluster {
+  display: grid;
+  gap: 10px;
+}
+
+.gamepad-cluster-dpad,
+.gamepad-cluster-face {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(3, minmax(72px, auto));
+}
+
+.gamepad-cluster-row {
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+}
+
+.gamepad-binding {
+  min-height: 72px;
+  border-radius: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  padding: 14px;
+  display: grid;
+  gap: 8px;
+  align-content: center;
+  text-align: left;
+}
+
+.gamepad-binding-label {
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.gamepad-binding-value {
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.gamepad-binding-dpad.is-up {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.gamepad-binding-dpad.is-left {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.gamepad-binding-dpad.is-down {
+  grid-column: 2;
+  grid-row: 3;
+}
+
+.gamepad-binding-dpad.is-right {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.gamepad-binding-face.is-face-y,
+.gamepad-binding-face.is-face-x {
+  grid-row: 1;
+}
+
+.gamepad-binding-face.is-face-b,
+.gamepad-binding-face.is-face-a {
+  grid-row: 2;
+}
+
+.gamepad-binding-face.is-face-y,
+.gamepad-binding-face.is-face-b {
+  grid-column: 1;
+}
+
+.gamepad-binding-face.is-face-x,
+.gamepad-binding-face.is-face-a {
+  grid-column: 2;
+}
+
+.gamepad-binding-face.is-face-b:last-child,
+.gamepad-binding-face.is-face-a:last-child {
+  grid-column: span 1;
 }
 
 .control-row {
@@ -1355,7 +1503,8 @@ textarea::placeholder {
   }
 
   .control-grid,
-  .slot-grid {
+  .slot-grid,
+  .gamepad-layout {
     grid-template-columns: 1fr;
   }
 

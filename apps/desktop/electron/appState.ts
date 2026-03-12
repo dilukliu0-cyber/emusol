@@ -13,7 +13,7 @@ import {
   type GameMetadata
 } from './gameMetadata';
 
-export type ThemeMode = 'dark' | 'light';
+export type ThemeMode = 'dark' | 'light' | 'pink';
 export type PlatformId = 'NES' | 'SNES' | 'GB' | 'GBC' | 'GBA' | 'MEGADRIVE' | 'N64' | 'GCN' | 'DS' | '3DS';
 export type SupportTier = 'v1' | 'future';
 export type FriendStatus = 'online' | 'offline' | 'playing';
@@ -63,6 +63,7 @@ export interface EmulatorProfile {
 
 export type EmulatorProfiles = Record<PlatformId, EmulatorProfile>;
 export type ControlBindings = Record<ControlAction, string>;
+export type GameControlBindingsByGameId = Record<string, ControlBindings>;
 
 export interface EmbeddedPreferences {
   volumePercent: number;
@@ -100,6 +101,7 @@ export interface PersistedAppState {
   friends: FriendEntry[];
   emulatorProfiles: EmulatorProfiles;
   embeddedPreferencesByPlatform: EmbeddedPreferencesByPlatform;
+  gameControlBindingsByGameId: GameControlBindingsByGameId;
 }
 
 export interface ImportRomsResult {
@@ -412,6 +414,22 @@ const defaultControlBindings = (): ControlBindings => ({
   select: 'rshift'
 });
 
+const mergeControlBindingCandidate = (
+  baseBindings: ControlBindings,
+  candidate: Partial<ControlBindings> | null | undefined
+): ControlBindings => {
+  const nextBindings: ControlBindings = { ...baseBindings };
+
+  for (const action of Object.keys(nextBindings) as ControlAction[]) {
+    const binding = candidate?.[action];
+    if (typeof binding === 'string' && binding.trim()) {
+      nextBindings[action] = binding.trim().toLowerCase();
+    }
+  }
+
+  return nextBindings;
+};
+
 const defaultEmbeddedPreferences = (): EmbeddedPreferences => ({
   volumePercent: 100,
   muted: false,
@@ -458,7 +476,8 @@ const defaultState = (): PersistedAppState => ({
   library: [],
   friends: defaultFriends(),
   emulatorProfiles: createDefaultEmulatorProfiles(),
-  embeddedPreferencesByPlatform: createDefaultEmbeddedPreferencesByPlatform()
+  embeddedPreferencesByPlatform: createDefaultEmbeddedPreferencesByPlatform(),
+  gameControlBindingsByGameId: {}
 });
 
 const TRAILING_GROUP_PATTERN = /\s*(\([^()]*\)|\[[^[\]]*])\s*$/;
@@ -602,15 +621,7 @@ const mergeEmbeddedPreferenceCandidate = (
   basePreferences: EmbeddedPreferences,
   candidate: Partial<EmbeddedPreferences> | null | undefined
 ): EmbeddedPreferences => {
-  const nextControlBindings: ControlBindings = { ...basePreferences.controlBindings };
-  const candidateBindings = candidate?.controlBindings;
-
-  for (const action of Object.keys(nextControlBindings) as ControlAction[]) {
-    const binding = candidateBindings?.[action];
-    if (typeof binding === 'string' && binding.trim()) {
-      nextControlBindings[action] = binding;
-    }
-  }
+  const nextControlBindings = mergeControlBindingCandidate(basePreferences.controlBindings, candidate?.controlBindings);
 
   return {
     volumePercent:
@@ -717,7 +728,12 @@ const mergeState = (candidate: Partial<PersistedAppState> | null | undefined): P
     ? {
         displayName: normalizeLegacyText(candidate.profile.displayName || base.profile.displayName, base.profile.displayName),
         avatarDataUrl: typeof candidate.profile.avatarDataUrl === 'string' ? candidate.profile.avatarDataUrl : undefined,
-        theme: candidate.profile.theme === 'light' ? 'light' : 'dark',
+        theme:
+          candidate.profile.theme === 'light'
+            ? 'light'
+            : candidate.profile.theme === 'pink'
+              ? 'pink'
+              : 'dark',
         accentColor: typeof candidate.profile.accentColor === 'string' && candidate.profile.accentColor ? candidate.profile.accentColor : base.profile.accentColor
       }
     : base.profile;
@@ -782,12 +798,34 @@ const mergeState = (candidate: Partial<PersistedAppState> | null | undefined): P
     );
   }
 
+  const nextGameControlBindingsByGameId: GameControlBindingsByGameId = {};
+  const knownGameIds = new Set(nextLibrary.map((game) => game.id));
+  const candidateGameControlBindings =
+    legacyAwareCandidate?.gameControlBindingsByGameId && typeof legacyAwareCandidate.gameControlBindingsByGameId === 'object'
+      ? legacyAwareCandidate.gameControlBindingsByGameId
+      : {};
+
+  for (const [gameId, bindings] of Object.entries(candidateGameControlBindings)) {
+    if (!knownGameIds.has(gameId)) {
+      continue;
+    }
+
+    const game = nextLibrary.find((entry) => entry.id === gameId);
+    if (!game) {
+      continue;
+    }
+
+    const platformDefaults = nextEmbeddedPreferencesByPlatform[game.platform]?.controlBindings ?? defaultControlBindings();
+    nextGameControlBindingsByGameId[gameId] = mergeControlBindingCandidate(platformDefaults, bindings);
+  }
+
   return {
     profile: nextProfile,
     library: nextLibrary,
     friends: nextFriends,
     emulatorProfiles: nextProfiles,
-    embeddedPreferencesByPlatform: nextEmbeddedPreferencesByPlatform
+    embeddedPreferencesByPlatform: nextEmbeddedPreferencesByPlatform,
+    gameControlBindingsByGameId: nextGameControlBindingsByGameId
   };
 };
 
@@ -823,7 +861,7 @@ export const saveProfileState = async (profile: ProfileState): Promise<ProfileSt
   state.profile = {
     displayName: String(profile.displayName || 'Игрок'),
     avatarDataUrl: profile.avatarDataUrl,
-    theme: profile.theme === 'light' ? 'light' : 'dark',
+    theme: profile.theme === 'light' ? 'light' : profile.theme === 'pink' ? 'pink' : 'dark',
     accentColor: String(profile.accentColor || '#ff5548')
   };
   const next = await saveAppState(state);
@@ -872,6 +910,25 @@ export const saveEmbeddedPreferences = async (
 
   const next = await saveAppState(state);
   return next.embeddedPreferencesByPlatform;
+};
+
+export const saveGameControlBindings = async (
+  gameId: string,
+  bindings: Partial<ControlBindings>
+): Promise<GameControlBindingsByGameId> => {
+  const state = await loadAppState();
+  const game = state.library.find((item) => item.id === gameId);
+
+  if (!game) {
+    throw new Error('Игра не найдена.');
+  }
+
+  const platformDefaults = state.embeddedPreferencesByPlatform[game.platform]?.controlBindings ?? defaultControlBindings();
+  const currentBindings = state.gameControlBindingsByGameId[gameId] ?? platformDefaults;
+  state.gameControlBindingsByGameId[gameId] = mergeControlBindingCandidate(currentBindings, bindings);
+
+  const next = await saveAppState(state);
+  return next.gameControlBindingsByGameId;
 };
 
 export const saveEmulatorProfile = async (
@@ -1023,6 +1080,7 @@ export const saveGameMetadata = async (gameId: string, patch: Partial<GameMetada
 export const removeGameFromLibrary = async (gameId: string): Promise<LibraryGame[]> => {
   const state = await loadAppState();
   state.library = state.library.filter((item) => item.id !== gameId);
+  delete state.gameControlBindingsByGameId[gameId];
   const next = await saveAppState(state);
   return next.library;
 };

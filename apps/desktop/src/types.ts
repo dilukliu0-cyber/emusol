@@ -1,4 +1,4 @@
-export type ThemeMode = 'dark' | 'light';
+export type ThemeMode = 'dark' | 'light' | 'pink';
 export type FilterMode = 'ALL' | 'ACTIVE' | 'FUTURE';
 export type PlatformId = 'NES' | 'SNES' | 'GB' | 'GBC' | 'GBA' | 'MEGADRIVE' | 'N64' | 'GCN' | 'DS' | '3DS';
 export type SupportTier = 'v1' | 'future';
@@ -71,6 +71,7 @@ export interface EmulatorProfile {
 
 export type EmulatorProfiles = Record<PlatformId, EmulatorProfile>;
 export type ControlBindings = Record<ControlAction, string>;
+export type GameControlBindingsByGameId = Record<string, ControlBindings>;
 
 export interface EmbeddedPreferences {
   volumePercent: number;
@@ -108,6 +109,7 @@ export interface AppStatePayload {
   friends: FriendEntry[];
   emulatorProfiles: EmulatorProfiles;
   embeddedPreferencesByPlatform: EmbeddedPreferencesByPlatform;
+  gameControlBindingsByGameId: GameControlBindingsByGameId;
 }
 
 export interface ImportRomsResult {
