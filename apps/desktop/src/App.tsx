@@ -98,6 +98,10 @@ interface NetplayRtcIceSignalPayload {
   candidate: RTCIceCandidateInit;
 }
 
+interface NetplayRelayFrameSignalPayload {
+  dataUrl: string;
+}
+
 interface GamepadSummary {
   index: number;
   id: string;
@@ -248,6 +252,15 @@ const isNetplayRtcIceSignalPayload = (value: unknown): value is NetplayRtcIceSig
 
   const candidate = value as Partial<NetplayRtcIceSignalPayload>;
   return Boolean(candidate.candidate && typeof candidate.candidate === 'object');
+};
+
+const isNetplayRelayFrameSignalPayload = (value: unknown): value is NetplayRelayFrameSignalPayload => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const candidate = value as Partial<NetplayRelayFrameSignalPayload>;
+  return typeof candidate.dataUrl === 'string' && candidate.dataUrl.startsWith('data:image/');
 };
 
 const isAudioContextLike = (value: unknown): value is AudioContext =>
@@ -798,6 +811,8 @@ function App() {
   const [remoteStreamReady, setRemoteStreamReady] = useState(false);
   const [remoteStreamError, setRemoteStreamError] = useState<string | null>(null);
   const [remoteStreamHasAudio, setRemoteStreamHasAudio] = useState(false);
+  const [remoteStreamTransport, setRemoteStreamTransport] = useState<'webrtc' | 'relay' | null>(null);
+  const [remoteRelayFrameDataUrl, setRemoteRelayFrameDataUrl] = useState<string | null>(null);
   const [, setStatusText] = useState('Импортируйте ROM-файлы. Для базовых платформ запуск уже встроен в приложение.');
   const [isLoading, setIsLoading] = useState(true);
   const [activePlayer, setActivePlayer] = useState<EmbeddedLaunchPayload | null>(null);
@@ -834,6 +849,7 @@ function App() {
   const libraryRef = useRef<LibraryGame[]>([]);
   const activePlayerRef = useRef<EmbeddedLaunchPayload | null>(null);
   const remoteStreamSessionRef = useRef<RemoteStreamSession | null>(null);
+  const remoteStreamTransportRef = useRef<'webrtc' | 'relay' | null>(null);
   const activeNetplaySessionRef = useRef<ActiveNetplaySession | null>(null);
   const netplayPeerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const netplayPeerRoleRef = useRef<'host' | 'guest' | null>(null);
@@ -842,6 +858,7 @@ function App() {
   const remoteMediaStreamRef = useRef<MediaStream | null>(null);
   const hostMediaStreamRef = useRef<MediaStream | null>(null);
   const hostAudioDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const relayCaptureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const localNetplayRomHashRef = useRef<string | null>(null);
   const remoteNetplayRomHashRef = useRef<string | null>(null);
   const localNetplayStateHashRef = useRef<string | null>(null);
@@ -1036,6 +1053,10 @@ function App() {
   useEffect(() => {
     remoteStreamSessionRef.current = remoteStreamSession;
   }, [remoteStreamSession]);
+
+  useEffect(() => {
+    remoteStreamTransportRef.current = remoteStreamTransport;
+  }, [remoteStreamTransport]);
 
   useEffect(() => {
     if (!remoteVideoRef.current || !remoteMediaStreamRef.current) {
@@ -1325,6 +1346,8 @@ function App() {
     setRemoteStreamReady(false);
     setRemoteStreamError(null);
     setRemoteStreamHasAudio(false);
+    setRemoteStreamTransport(null);
+    setRemoteRelayFrameDataUrl(null);
 
     if (remoteVideoRef.current) {
       remoteVideoRef.current.srcObject = null;
@@ -1483,6 +1506,53 @@ function App() {
     }
   };
 
+  const captureRelayFrame = (): string | null => {
+    const sourceCanvas = playerCanvasRef.current;
+    if (!sourceCanvas) {
+      return null;
+    }
+
+    const sourceWidth = sourceCanvas.width || sourceCanvas.clientWidth || 0;
+    const sourceHeight = sourceCanvas.height || sourceCanvas.clientHeight || 0;
+    if (!sourceWidth || !sourceHeight) {
+      return null;
+    }
+
+    const maxWidth = 960;
+    const scale = Math.min(1, maxWidth / sourceWidth);
+    const targetWidth = Math.max(1, Math.round(sourceWidth * scale));
+    const targetHeight = Math.max(1, Math.round(sourceHeight * scale));
+
+    let relayCanvas = relayCaptureCanvasRef.current;
+    if (!relayCanvas) {
+      relayCanvas = document.createElement('canvas');
+      relayCaptureCanvasRef.current = relayCanvas;
+    }
+
+    if (relayCanvas.width !== targetWidth || relayCanvas.height !== targetHeight) {
+      relayCanvas.width = targetWidth;
+      relayCanvas.height = targetHeight;
+    }
+
+    const context = relayCanvas.getContext('2d', { alpha: false });
+    if (!context) {
+      return null;
+    }
+
+    context.imageSmoothingEnabled = true;
+    context.drawImage(sourceCanvas, 0, 0, targetWidth, targetHeight);
+
+    try {
+      return relayCanvas.toDataURL('image/webp', 0.55);
+    } catch {
+      try {
+        return relayCanvas.toDataURL('image/jpeg', 0.6);
+      } catch {
+        return null;
+      }
+    }
+  };
+
   const flushPendingNetplayIceCandidates = async (connection: RTCPeerConnection) => {
     if (!netplayPendingIceCandidatesRef.current.length) {
       return;
@@ -1524,16 +1594,20 @@ function App() {
     };
 
       connection.onconnectionstatechange = () => {
-        if (role === 'guest' && connection.connectionState === 'connected') {
-          setRemoteStreamReady(true);
-          setNetplaySyncStatus(remoteMediaStreamRef.current?.getAudioTracks().length ? 'Видео и звук от хоста подключены.' : 'Видео от хоста подключено.');
-        }
+      if (role === 'guest' && connection.connectionState === 'connected') {
+        setRemoteStreamReady(true);
+        setRemoteStreamTransport('webrtc');
+        setNetplaySyncStatus(remoteMediaStreamRef.current?.getAudioTracks().length ? 'Видео и звук от хоста подключены.' : 'Видео от хоста подключено.');
+      }
 
       if (connection.connectionState === 'failed') {
         if (role === 'guest') {
-          setRemoteStreamError('Не удалось подключиться к стриму хоста.');
+          setRemoteStreamError(null);
+          setRemoteStreamTransport((current) => current ?? 'relay');
+          setNetplaySyncStatus('Прямой стрим не поднялся. Жду релейный поток хоста...');
+        } else {
+          setNetplaySyncStatus('Прямой стрим не поднялся. Переключаюсь на релейный поток.');
         }
-        setNetplaySyncStatus('Стрим разорван. Попробуйте создать комнату заново.');
       }
     };
 
@@ -1557,6 +1631,7 @@ function App() {
         setRemoteStreamError(null);
         const hasAudio = incomingStream.getAudioTracks().length > 0;
         setRemoteStreamHasAudio(hasAudio);
+        setRemoteStreamTransport('webrtc');
         setRemoteStreamSession((current) => (current ? { ...current, audioAvailable: hasAudio } : current));
         setNetplaySyncStatus(hasAudio ? 'Видео и звук от хоста подключены.' : 'Видео от хоста подключено.');
       };
@@ -2686,6 +2761,33 @@ function App() {
   useEffect(() => {
     if (
       !activeNetplaySession ||
+      activeNetplaySession.launchMode !== 'host-stream' ||
+      activeNetplaySession.localPlayerIndex !== 1 ||
+      !activePlayer ||
+      activePlayerRuntime !== 'nostalgist' ||
+      isPlayerLoading ||
+      playerError
+    ) {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(() => {
+      const frameDataUrl = captureRelayFrame();
+      if (!frameDataUrl) {
+        return;
+      }
+
+      netplayClientRef.current?.sendSignal('stream-frame', { dataUrl: frameDataUrl });
+    }, 140);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [activeNetplaySession, activePlayer, activePlayerRuntime, isPlayerLoading, playerError]);
+
+  useEffect(() => {
+    if (
+      !activeNetplaySession ||
       activeNetplaySession.launchMode !== 'experimental-relay' ||
       !activePlayer ||
       activePlayerRuntime !== 'nostalgist' ||
@@ -3447,7 +3549,19 @@ function App() {
           return;
         }
 
-      setStatusText(`Получен онлайн-сигнал "${signal.channel}" от друга.`);
+        if (signal.channel === 'stream-frame' && isNetplayRelayFrameSignalPayload(signal.payload) && session.localPlayerIndex === 2) {
+          if (remoteStreamTransportRef.current !== 'webrtc') {
+            setRemoteRelayFrameDataUrl(signal.payload.dataUrl);
+            setRemoteStreamTransport('relay');
+            setRemoteStreamReady(true);
+            setRemoteStreamHasAudio(false);
+            setRemoteStreamSession((current) => (current ? { ...current, audioAvailable: false } : current));
+            setNetplaySyncStatus('Релейный поток от хоста подключен.');
+          }
+          return;
+        }
+
+        setStatusText(`Получен онлайн-сигнал "${signal.channel}" от друга.`);
       },
       onError: (message) => {
         setNetplayError(message);
@@ -3973,7 +4087,15 @@ function App() {
   if (remoteStreamSession) {
     return (
       <div className="player-shell remote-stream-shell">
-        <video ref={remoteVideoRef} className="player-stream-video" autoPlay playsInline />
+        <video
+          ref={remoteVideoRef}
+          className={remoteStreamTransport === 'webrtc' ? 'player-stream-video' : 'player-stream-video hidden-stream'}
+          autoPlay
+          playsInline
+        />
+        {remoteStreamTransport === 'relay' && remoteRelayFrameDataUrl ? (
+          <img src={remoteRelayFrameDataUrl} alt={remoteStreamSession.gameTitle} className="player-stream-image" />
+        ) : null}
 
         {!remoteStreamReady && !remoteStreamError ? (
           <div className="player-boot">
@@ -3997,6 +4119,9 @@ function App() {
             <span>{remoteStreamSession.gameTitle} | {formatPlatform(remoteStreamSession.platform)}</span>
             <div className="remote-stream-hud-status">
               <span className="chip success">Стрим от хоста</span>
+              <span className={remoteStreamTransport === 'webrtc' ? 'chip success' : 'chip neutral'}>
+                {remoteStreamTransport === 'webrtc' ? 'Прямой поток' : 'Релейный поток'}
+              </span>
               <span className={remoteStreamHasAudio ? 'chip success' : 'chip neutral'}>
                 {remoteStreamHasAudio ? 'Со звуком' : 'Без звука'}
               </span>

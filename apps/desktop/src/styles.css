@@ -411,6 +411,21 @@ button:disabled {
   background: #000;
 }
 
+.player-stream-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  background: #000;
+}
+
+.hidden-stream {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .player-iframe {
   position: absolute;
   inset: 0;
@@ -1109,7 +1124,7 @@ textarea::placeholder {
 }
 
 .game-card-art {
-  min-height: 112px;
+  aspect-ratio: 1 / 1;
   border-radius: 18px;
   padding: 12px;
   display: flex;
@@ -1331,7 +1346,8 @@ textarea::placeholder {
 }
 
 .hero-cover-frame {
-  min-height: 520px;
+  width: 100%;
+  aspect-ratio: 1 / 1;
   border-radius: 30px;
   overflow: hidden;
   background: rgba(255, 255, 255, 0.04);
@@ -1344,6 +1360,7 @@ textarea::placeholder {
 }
 
 .hero-cover-fallback {
+  width: 100%;
   height: 100%;
   padding: 26px;
   display: flex;
@@ -1551,10 +1568,6 @@ textarea::placeholder {
 
   .hero-panel {
     grid-template-columns: 1fr;
-  }
-
-  .hero-cover-frame {
-    min-height: 380px;
   }
 }
 
