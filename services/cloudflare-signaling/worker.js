@@ -25,6 +25,7 @@ const cloneRoom = (room) => ({
   members: room.members.map((member) => ({
     userId: member.userId,
     displayName: member.displayName,
+    avatarDataUrl: member.avatarDataUrl ?? null,
     ready: Boolean(member.ready),
     joinedAt: member.joinedAt,
     isHost: member.userId === room.hostUserId,
@@ -54,6 +55,10 @@ export class SignalingHub extends DurableObject {
           socket: ws,
           userId: typeof attachment.userId === "string" ? attachment.userId : null,
           displayName: typeof attachment.displayName === "string" && attachment.displayName ? attachment.displayName : "Player",
+          avatarDataUrl:
+            typeof attachment.avatarDataUrl === "string" && attachment.avatarDataUrl.trim()
+              ? attachment.avatarDataUrl
+              : null,
           connectedAt:
             typeof attachment.connectedAt === "string" && attachment.connectedAt
               ? attachment.connectedAt
@@ -101,6 +106,7 @@ export class SignalingHub extends DurableObject {
       socket: server,
       userId: null,
       displayName: "Player",
+      avatarDataUrl: null,
       connectedAt: new Date().toISOString(),
       roomId: null,
     };
@@ -180,6 +186,7 @@ export class SignalingHub extends DurableObject {
     ws.serializeAttachment({
       userId: peer.userId,
       displayName: peer.displayName,
+      avatarDataUrl: peer.avatarDataUrl ?? null,
       connectedAt: peer.connectedAt,
       roomId: peer.roomId,
     });
@@ -196,6 +203,7 @@ export class SignalingHub extends DurableObject {
     return {
       userId: peer.userId,
       displayName: peer.displayName,
+      avatarDataUrl: peer.avatarDataUrl ?? null,
       roomId: peer.roomId ?? null,
       connectedAt: peer.connectedAt,
     };
@@ -288,6 +296,7 @@ export class SignalingHub extends DurableObject {
     room.members.push({
       userId: peer.userId,
       displayName: peer.displayName,
+      avatarDataUrl: peer.avatarDataUrl ?? null,
       ready: false,
       joinedAt: new Date().toISOString(),
     });
@@ -308,6 +317,10 @@ export class SignalingHub extends DurableObject {
       typeof message.displayName === "string" && message.displayName.trim()
         ? message.displayName.trim().slice(0, 28)
         : "Player";
+    const avatarDataUrl =
+      typeof message.avatarDataUrl === "string" && message.avatarDataUrl.trim()
+        ? message.avatarDataUrl.trim()
+        : null;
 
     const previousSocket = this.peersByUserId.get(userId);
     if (previousSocket && previousSocket !== socket) {
@@ -316,6 +329,7 @@ export class SignalingHub extends DurableObject {
 
     peer.userId = userId;
     peer.displayName = displayName;
+    peer.avatarDataUrl = avatarDataUrl;
     this.peersByUserId.set(userId, socket);
     this.setPeerAttachment(socket, peer);
 
@@ -323,6 +337,7 @@ export class SignalingHub extends DurableObject {
       type: "session.welcome",
       selfUserId: userId,
       displayName,
+      avatarDataUrl,
       users: this.getPresenceSnapshot(),
       room: peer.roomId ? this.serializeRoom(this.rooms.get(peer.roomId)) : null,
     });
@@ -417,6 +432,7 @@ export class SignalingHub extends DurableObject {
         roomId: room.id,
         fromUserId: peer.userId,
         fromDisplayName: peer.displayName,
+        fromAvatarDataUrl: peer.avatarDataUrl ?? null,
         gameTitle: room.gameTitle,
         platform: room.platform,
         createdAt: new Date().toISOString(),

@@ -119,9 +119,11 @@ const createMainWindow = async (): Promise<void> => {
     minWidth: 1220,
     minHeight: 760,
     backgroundColor: '#0b1020',
-    titleBarStyle: 'hidden',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
     titleBarOverlay: false,
     autoHideMenuBar: true,
+    fullscreenable: true,
+    simpleFullscreen: process.platform === 'darwin',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -243,6 +245,12 @@ ipcMain.handle('window:minimize', async () => {
 ipcMain.handle('window:toggle-maximize', async () => {
   if (!mainWindow) {
     return false;
+  }
+
+  if (process.platform === 'darwin') {
+    const nextFullscreen = !mainWindow.isFullScreen();
+    mainWindow.setFullScreen(nextFullscreen);
+    return nextFullscreen;
   }
 
   if (mainWindow.isMaximized()) {

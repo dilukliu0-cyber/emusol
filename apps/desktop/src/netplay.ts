@@ -3,6 +3,7 @@ import type { PlatformId } from './types';
 export interface NetplayPresenceUser {
   userId: string;
   displayName: string;
+  avatarDataUrl?: string;
   roomId: string | null;
   connectedAt: string;
 }
@@ -10,6 +11,7 @@ export interface NetplayPresenceUser {
 export interface NetplayRoomMember {
   userId: string;
   displayName: string;
+  avatarDataUrl?: string;
   ready: boolean;
   joinedAt: string;
   isHost: boolean;
@@ -32,6 +34,7 @@ export interface NetplayInvite {
   roomId: string;
   fromUserId: string;
   fromDisplayName: string;
+  fromAvatarDataUrl?: string;
   gameTitle: string;
   platform: PlatformId;
   createdAt: string;
@@ -49,6 +52,7 @@ interface NetplayClientOptions {
   serverUrl: string;
   userId: string;
   displayName: string;
+  avatarDataUrl?: string;
   onOpen: () => void;
   onClose: (reason: string) => void;
   onPresence: (users: NetplayPresenceUser[]) => void;
@@ -75,6 +79,22 @@ const EMUSOL_SIGNALING_URL_KEY = 'emusol.netplay.serverUrl';
 export const DEFAULT_SIGNALING_URL = 'wss://emusol-signaling.dilukliu0.workers.dev/ws';
 const LEGACY_SIGNALING_URLS = new Set(['ws://127.0.0.1:43123', 'ws://localhost:43123']);
 
+const getCloseReason = (event: CloseEvent): string => {
+  if (event.reason?.trim()) {
+    return event.reason;
+  }
+
+  if (event.code === 1000) {
+    return 'Соединение закрыто.';
+  }
+
+  if (event.code === 1006) {
+    return 'Соединение потеряно.';
+  }
+
+  return 'Онлайн-соединение закрыто.';
+};
+
 export const getDefaultSignalingUrl = (): string => {
   const storedValue = localStorage.getItem(EMUSOL_SIGNALING_URL_KEY)?.trim() || '';
   if (!storedValue || LEGACY_SIGNALING_URLS.has(storedValue)) {
@@ -90,13 +110,27 @@ export const setDefaultSignalingUrl = (value: string): void => {
   localStorage.setItem(EMUSOL_SIGNALING_URL_KEY, nextValue);
 };
 
-export const getNetplayUserId = (): string => {
-  const storedValue = localStorage.getItem(EMUSOL_NETPLAY_ID_KEY);
-  if (storedValue) {
-    return storedValue;
+const createShortNetplayId = (seed: string): string => {
+  let hash = 0;
+
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 31 + seed.charCodeAt(index)) >>> 0;
   }
 
-  const nextValue = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `user_${Date.now()}`;
+  return hash.toString(36).padStart(5, '0').slice(0, 5);
+};
+
+export const getNetplayUserId = (): string => {
+  const storedValue = localStorage.getItem(EMUSOL_NETPLAY_ID_KEY)?.trim() ?? '';
+  if (storedValue) {
+    const normalizedValue = storedValue.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const shortValue = normalizedValue && normalizedValue.length <= 5 ? normalizedValue : createShortNetplayId(storedValue);
+    localStorage.setItem(EMUSOL_NETPLAY_ID_KEY, shortValue);
+    return shortValue;
+  }
+
+  const seed = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `user_${Date.now()}`;
+  const nextValue = createShortNetplayId(seed);
   localStorage.setItem(EMUSOL_NETPLAY_ID_KEY, nextValue);
   return nextValue;
 };
@@ -118,18 +152,19 @@ export const createNetplayClient = (options: NetplayClientOptions): NetplayClien
     send(socket, {
       type: 'hello',
       userId: options.userId,
-      displayName: options.displayName
+      displayName: options.displayName,
+      avatarDataUrl: options.avatarDataUrl
     });
     options.onOpen();
   });
 
   socket.addEventListener('close', (event) => {
     isOpen = false;
-    options.onClose(event.reason || 'Соединение закрыто.');
+    options.onClose(getCloseReason(event));
   });
 
   socket.addEventListener('error', () => {
-    options.onError('Не удалось подключиться к signaling-сервису.');
+    options.onError('Не удалось подключиться к онлайн-серверу.');
   });
 
   socket.addEventListener('message', (event) => {

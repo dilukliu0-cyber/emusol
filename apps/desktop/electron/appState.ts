@@ -36,6 +36,7 @@ export interface FriendEntry {
   name: string;
   status: FriendStatus;
   note: string;
+  avatarDataUrl?: string;
 }
 
 export interface LibraryGame {
@@ -185,6 +186,7 @@ const V1_PLATFORMS = new Set<PlatformId>(['NES', 'SNES', 'GB', 'GBC', 'GBA', 'ME
 
 const stateFilePath = (): string => path.join(app.getPath('userData'), 'emusol-state.json');
 const saveStatesRootPath = (): string => path.join(app.getPath('userData'), 'save-states');
+const SAVE_SLOT_COUNT = 5;
 
 const defaultProfile = (): ProfileState => ({
   displayName: 'Игрок',
@@ -193,9 +195,9 @@ const defaultProfile = (): ProfileState => ({
 });
 
 const defaultFriends = (): FriendEntry[] => [
-  { id: 'mira', name: 'Мира', status: 'online', note: '' },
-  { id: 'teo', name: 'Тео', status: 'online', note: '' },
-  { id: 'lena', name: 'Лена', status: 'offline', note: '' }
+  { id: 'mira', name: 'Мира', status: 'online', note: '', avatarDataUrl: undefined },
+  { id: 'teo', name: 'Тео', status: 'online', note: '', avatarDataUrl: undefined },
+  { id: 'lena', name: 'Лена', status: 'offline', note: '', avatarDataUrl: undefined }
 ];
 
 const legacySystemFriendNotes = new Set([
@@ -612,7 +614,7 @@ const fileToDataUrl = async (targetPath: string, mimeType: string): Promise<stri
 };
 
 const createEmptySaveSlots = (): SaveSlotSummary[] =>
-  Array.from({ length: 3 }, (_, index) => ({
+  Array.from({ length: SAVE_SLOT_COUNT }, (_, index) => ({
     slot: index + 1,
     hasState: false
   }));
@@ -631,7 +633,7 @@ const mergeEmbeddedPreferenceCandidate = (
     muted: typeof candidate?.muted === 'boolean' ? candidate.muted : basePreferences.muted,
     quickSlot:
       typeof candidate?.quickSlot === 'number'
-        ? Math.max(1, Math.min(3, Math.round(candidate.quickSlot)))
+        ? Math.max(1, Math.min(SAVE_SLOT_COUNT, Math.round(candidate.quickSlot)))
         : basePreferences.quickSlot,
     controlBindings: nextControlBindings,
     videoFilter: candidate?.videoFilter === 'smooth' ? 'smooth' : basePreferences.videoFilter,
@@ -769,7 +771,8 @@ const mergeState = (candidate: Partial<PersistedAppState> | null | undefined): P
             id: friendId,
             name: name.slice(0, 28) || 'Друг',
             status: (item.status === 'online' || item.status === 'playing' ? item.status : 'offline') as FriendStatus,
-            note: note.slice(0, 120)
+            note: note.slice(0, 120),
+            avatarDataUrl: typeof item.avatarDataUrl === 'string' && item.avatarDataUrl.trim() ? item.avatarDataUrl : undefined
           };
         })
     : base.friends;
@@ -877,7 +880,8 @@ export const saveFriendEntry = async (
     id: normalizedId,
     name: normalizeLegacyText(friend.name || normalizedId, normalizedId).slice(0, 60) || normalizedId,
     status: friend.status === 'online' || friend.status === 'playing' ? friend.status : 'offline',
-    note: normalizeLegacyText(friend.note || '').slice(0, 120)
+    note: normalizeLegacyText(friend.note || '').slice(0, 120),
+    avatarDataUrl: typeof friend.avatarDataUrl === 'string' && friend.avatarDataUrl.trim() ? friend.avatarDataUrl : undefined
   };
 
   const existingIndex = state.friends.findIndex((item) => item.id.toLowerCase() === normalizedFriend.id.toLowerCase());
@@ -1220,7 +1224,7 @@ export const saveGameStateSlot = async (
   stateBase64: string,
   thumbnailDataUrl?: string
 ): Promise<SaveSlotSummary[]> => {
-  if (slot < 1 || slot > 3) {
+  if (slot < 1 || slot > SAVE_SLOT_COUNT) {
     throw new Error('Неверный слот сохранения.');
   }
 
@@ -1237,7 +1241,7 @@ export const saveGameStateSlot = async (
 };
 
 export const loadGameStateSlot = async (gameId: string, slot: number): Promise<LoadGameStateResult> => {
-  if (slot < 1 || slot > 3) {
+  if (slot < 1 || slot > SAVE_SLOT_COUNT) {
     throw new Error('Неверный слот сохранения.');
   }
 

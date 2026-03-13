@@ -1,5 +1,6 @@
 ﻿import type { ChangeEvent, MutableRefObject } from 'react';
 import type { Nostalgist as NostalgistInstance } from 'nostalgist';
+import type { CSSProperties } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { FUTURE_PLATFORMS, V1_PLATFORMS } from './catalog';
 import {
@@ -43,6 +44,7 @@ import type {
 } from './types';
 
 type SortMode = 'RECENT' | 'TITLE' | 'PLATFORM' | 'MOST_PLAYED' | 'NEWEST';
+type NetplayConnectionState = 'offline' | 'connecting' | 'connected' | 'reconnecting';
 
 interface PlayerFrameRequest {
   reject: (reason?: unknown) => void;
@@ -102,6 +104,10 @@ interface NetplayRelayFrameSignalPayload {
   dataUrl: string;
 }
 
+interface NetplayPauseSignalPayload {
+  paused: boolean;
+}
+
 interface GamepadSummary {
   index: number;
   id: string;
@@ -126,6 +132,21 @@ const NETPLAY_STATE_HASH_INTERVAL_MS = 5000;
 const NETPLAY_INPUT_FRAME_DELAY = 2;
 const GAMEPAD_DEADZONE = 0.35;
 const DEFAULT_ACCOUNT_ART = `${import.meta.env.BASE_URL}emusol-bird.png`;
+const GENERIC_PLATFORM_ICON = `${import.meta.env.BASE_URL}platform-icons/generic.svg`;
+const PLATFORM_ICON_ASSETS: Record<PlatformId, string> = {
+  NES: `${import.meta.env.BASE_URL}platform-icons/nes.svg`,
+  SNES: `${import.meta.env.BASE_URL}platform-icons/snes.svg`,
+  GB: `${import.meta.env.BASE_URL}platform-icons/gb.svg`,
+  GBC: `${import.meta.env.BASE_URL}platform-icons/gbc.svg`,
+  GBA: `${import.meta.env.BASE_URL}platform-icons/gba.svg`,
+  MEGADRIVE: `${import.meta.env.BASE_URL}platform-icons/megadrive.svg`,
+  N64: `${import.meta.env.BASE_URL}platform-icons/n64.svg`,
+  GCN: `${import.meta.env.BASE_URL}platform-icons/gcn.svg`,
+  DS: `${import.meta.env.BASE_URL}platform-icons/ds.svg`,
+  '3DS': `${import.meta.env.BASE_URL}platform-icons/3ds.svg`
+};
+
+const getPlatformIconSrc = (platform?: PlatformId | null): string => (platform ? PLATFORM_ICON_ASSETS[platform] : GENERIC_PLATFORM_ICON);
 const PINK_THEME_ACCENT = '#ff4fa3';
 
 const defaultProfile: ProfileState = {
@@ -263,6 +284,15 @@ const isNetplayRelayFrameSignalPayload = (value: unknown): value is NetplayRelay
   return typeof candidate.dataUrl === 'string' && candidate.dataUrl.startsWith('data:image/');
 };
 
+const isNetplayPauseSignalPayload = (value: unknown): value is NetplayPauseSignalPayload => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const candidate = value as Partial<NetplayPauseSignalPayload>;
+  return typeof candidate.paused === 'boolean';
+};
+
 const isAudioContextLike = (value: unknown): value is AudioContext =>
   value !== null &&
   typeof value === 'object' &&
@@ -325,6 +355,36 @@ const formatFriendPresence = (status: FriendStatus, detail?: string): string => 
   return status === 'online' ? 'В сети' : 'Не в сети';
 };
 
+const createStableHue = (value: string): number => {
+  let hash = 0;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 33 + value.charCodeAt(index)) >>> 0;
+  }
+
+  return hash % 360;
+};
+
+const getAvatarFallbackText = (name: string | undefined, fallbackId: string): string => {
+  const baseValue = (name || fallbackId || 'FR').trim().replace(/\s+/g, '');
+  return baseValue.slice(0, 2).toUpperCase();
+};
+
+const getAvatarGradientStyle = (seed: string): CSSProperties => {
+  const hue = createStableHue(seed);
+  return {
+    background: `linear-gradient(135deg, hsl(${hue} 78% 64%), hsl(${(hue + 38) % 360} 76% 52%))`
+  };
+};
+
+const getFriendAvatarFallback = (friend: FriendEntry): string => {
+  return getAvatarFallbackText(friend.name, friend.id);
+};
+
+const getFriendAvatarStyle = (friend: FriendEntry): CSSProperties => {
+  return getAvatarGradientStyle(friend.id);
+};
+
 const defaultFriendDraft = (): FriendDraft => ({
   friendId: ''
 });
@@ -336,6 +396,10 @@ const pauseTabs = [
   { id: 'screens', label: 'Экраны' },
   { id: 'saves', label: 'Сохранить / загрузить' }
 ] as const;
+type PauseTabId = (typeof pauseTabs)[number]['id'];
+type PauseViewId = 'menu' | 'settings' | PauseTabId;
+
+const getPauseSectionTitle = (viewId: PauseTabId): string => pauseTabs.find((tab) => tab.id === viewId)?.label ?? 'Настройки';
 
 const videoFilterOptions: Array<{ id: EmbeddedPreferences['videoFilter']; label: string }> = [
   { id: 'sharp', label: 'Четкий' },
@@ -521,8 +585,10 @@ const listConnectedGamepads = (): GamepadSummary[] => {
     }));
 };
 
+const SAVE_SLOT_COUNT = 5;
+
 const createEmptySaveSlots = (): SaveSlotSummary[] =>
-  Array.from({ length: 3 }, (_, index) => ({
+  Array.from({ length: SAVE_SLOT_COUNT }, (_, index) => ({
     slot: index + 1,
     hasState: false
   }));
@@ -799,11 +865,12 @@ function App() {
   const [signalingUrl, setSignalingUrl] = useState(getDefaultSignalingUrl());
   const [selfNetplayUserId] = useState(getNetplayUserId());
   const [isNetplayConnected, setIsNetplayConnected] = useState(false);
+  const [netplayConnectionState, setNetplayConnectionState] = useState<NetplayConnectionState>('connecting');
   const [netplayUsers, setNetplayUsers] = useState<NetplayPresenceUser[]>([]);
   const [netplayRoom, setNetplayRoom] = useState<NetplayRoom | null>(null);
   const [netplayInvites, setNetplayInvites] = useState<NetplayInvite[]>([]);
   const [netplayError, setNetplayError] = useState<string | null>(null);
-  const [netplayPanelOpen, setNetplayPanelOpen] = useState(false);
+  const [activeFriendProfileId, setActiveFriendProfileId] = useState<string | null>(null);
   const [activeNetplaySession, setActiveNetplaySession] = useState<ActiveNetplaySession | null>(null);
   const [pendingNetplayLaunchRoom, setPendingNetplayLaunchRoom] = useState<NetplayRoom | null>(null);
   const [netplaySyncStatus, setNetplaySyncStatus] = useState('Ожидание онлайн-сеанса.');
@@ -813,6 +880,7 @@ function App() {
   const [remoteStreamHasAudio, setRemoteStreamHasAudio] = useState(false);
   const [remoteStreamTransport, setRemoteStreamTransport] = useState<'webrtc' | 'relay' | null>(null);
   const [remoteRelayFrameDataUrl, setRemoteRelayFrameDataUrl] = useState<string | null>(null);
+  const [netplayPauseMessage, setNetplayPauseMessage] = useState<string>('Пауза синхронизирована между игроками.');
   const [, setStatusText] = useState('Импортируйте ROM-файлы. Для базовых платформ запуск уже встроен в приложение.');
   const [isLoading, setIsLoading] = useState(true);
   const [activePlayer, setActivePlayer] = useState<EmbeddedLaunchPayload | null>(null);
@@ -821,7 +889,8 @@ function App() {
   const [playerFrameSessionId, setPlayerFrameSessionId] = useState(0);
   const [playerError, setPlayerError] = useState<string | null>(null);
   const [pauseMenuOpen, setPauseMenuOpen] = useState(false);
-  const [pauseTab, setPauseTab] = useState<(typeof pauseTabs)[number]['id']>('controls');
+  const [pauseTab, setPauseTab] = useState<PauseViewId>('menu');
+  const [pauseReturnView, setPauseReturnView] = useState<'menu' | 'settings'>('menu');
   const [libraryControlsOpen, setLibraryControlsOpen] = useState(false);
   const [saveSlots, setSaveSlots] = useState<SaveSlotSummary[]>(createEmptySaveSlots());
   const [autoSave, setAutoSave] = useState<AutoSaveSummary>({ hasState: false });
@@ -835,6 +904,8 @@ function App() {
   const playerFrameRef = useRef<HTMLIFrameElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const playerInstanceRef = useRef<NostalgistInstance | null>(null);
+  const playerErrorRef = useRef<string | null>(null);
+  const pauseMenuOpenRef = useRef(false);
   const playerFramePendingRef = useRef<Map<string, PlayerFrameRequest>>(new Map());
   const playerFrameRequestIdRef = useRef(0);
   const pressedActionsRef = useRef<Set<ControlAction>>(new Set());
@@ -859,6 +930,9 @@ function App() {
   const hostMediaStreamRef = useRef<MediaStream | null>(null);
   const hostAudioDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
   const relayCaptureCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const autoNetplayConnectAttemptedRef = useRef(false);
+  const manualNetplayDisconnectRef = useRef(false);
+  const netplayReconnectTimeoutRef = useRef<number | null>(null);
   const localNetplayRomHashRef = useRef<string | null>(null);
   const remoteNetplayRomHashRef = useRef<string | null>(null);
   const localNetplayStateHashRef = useRef<string | null>(null);
@@ -901,7 +975,7 @@ function App() {
   }, [sortMenuOpen]);
 
   useEffect(() => {
-    if (!accountMenuOpen && !settingsModalOpen && !libraryControlsOpen && !netplayPanelOpen) {
+    if (!accountMenuOpen && !settingsModalOpen && !libraryControlsOpen) {
       return undefined;
     }
 
@@ -918,13 +992,6 @@ function App() {
         event.preventDefault();
         event.stopPropagation();
         setLibraryControlsOpen(false);
-        return;
-      }
-
-      if (netplayPanelOpen) {
-        event.preventDefault();
-        event.stopPropagation();
-        setNetplayPanelOpen(false);
         return;
       }
 
@@ -947,7 +1014,7 @@ function App() {
     return () => {
       window.removeEventListener('keydown', handleGlobalEscape, true);
     };
-  }, [accountMenuOpen, activePlayer, libraryControlsOpen, netplayPanelOpen, rebindingAction, remoteStreamSession, settingsModalOpen]);
+  }, [accountMenuOpen, activePlayer, libraryControlsOpen, rebindingAction, remoteStreamSession, settingsModalOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1049,6 +1116,14 @@ function App() {
   useEffect(() => {
     activePlayerRef.current = activePlayer;
   }, [activePlayer]);
+
+  useEffect(() => {
+    playerErrorRef.current = playerError;
+  }, [playerError]);
+
+  useEffect(() => {
+    pauseMenuOpenRef.current = pauseMenuOpen;
+  }, [pauseMenuOpen]);
 
   useEffect(() => {
     remoteStreamSessionRef.current = remoteStreamSession;
@@ -1179,6 +1254,8 @@ function App() {
         ? 'Играть через 3DS эмулятор'
         : 'Подключить 3DS эмулятор'
       : selectedGameDescriptor?.actionLabel ?? 'Платформа позже';
+  const topbarPlatformPalette = selectedGamePalette ?? [profile.accentColor, '#ffffff'];
+  const topbarPlatformIconSrc = selectedGame ? PLATFORM_ICON_ASSETS[selectedGame.platform] : GENERIC_PLATFORM_ICON;
   const streamedPlatform = remoteStreamSession?.platform ?? null;
   const preferencePlatform = activePlayer?.game.platform ?? streamedPlatform ?? selectedGame?.platform ?? null;
   const controlTargetGame =
@@ -1208,25 +1285,74 @@ function App() {
         .sort((left, right) => left.displayName.localeCompare(right.displayName, 'ru')),
     [netplayUsers, selfNetplayUserId]
   );
+  const friendsWithPresence = useMemo(
+    () =>
+      friends.map((friend) => {
+        const onlineUser = onlineUsers.find((user) => user.userId.toLowerCase() === friend.id.toLowerCase()) ?? null;
+        return {
+          ...friend,
+          avatarDataUrl: onlineUser?.avatarDataUrl || friend.avatarDataUrl,
+          isOnline: Boolean(onlineUser),
+          onlineUser
+        };
+      }),
+    [friends, onlineUsers]
+  );
+  const activeFriendProfile = activeFriendProfileId ? friendsWithPresence.find((friend) => friend.id === activeFriendProfileId) ?? null : null;
   const currentNetplayMember = netplayRoom?.members.find((member) => member.userId === selfNetplayUserId) ?? null;
   const isNetplayHost = netplayRoom?.hostUserId === selfNetplayUserId;
   const selectedGameNetplaySupported = selectedGame ? supportsExperimentalNetplayPlatform(selectedGame.platform) : false;
   const canCreateNetplayRoom = Boolean(isNetplayConnected && selectedGame && selectedGameNetplaySupported && canLaunchSelectedGame && !activePlayer && !remoteStreamSession && !netplayRoom);
   const activeInvite = netplayInvites[0] ?? null;
   const additionalInviteCount = Math.max(0, netplayInvites.length - 1);
+  const readyMembersCount = netplayRoom?.members.filter((member) => member.ready).length ?? 0;
+  const notReadyMembersCount = netplayRoom ? Math.max(0, netplayRoom.members.length - readyMembersCount) : 0;
+  const netplayConnectionLabel =
+    netplayConnectionState === 'connected'
+      ? 'В сети'
+      : netplayConnectionState === 'reconnecting'
+        ? 'Переподключение...'
+        : netplayConnectionState === 'connecting'
+          ? 'Подключение...'
+          : 'Отключено';
+  const netplayConnectionChipClass =
+    netplayConnectionState === 'connected'
+      ? 'chip success'
+      : netplayConnectionState === 'reconnecting'
+        ? 'chip warning'
+        : 'chip neutral';
 
   useEffect(() => {
-    if (isNetplayConnected || netplayRoom || activeInvite) {
-      setNetplayPanelOpen(true);
+    if (isLoading || autoNetplayConnectAttemptedRef.current || netplayClientRef.current || isNetplayConnected) {
+      return;
     }
-  }, [activeInvite, isNetplayConnected, netplayRoom]);
+
+    autoNetplayConnectAttemptedRef.current = true;
+    handleConnectNetplay();
+  }, [isLoading, isNetplayConnected]);
+
+  useEffect(
+    () => () => {
+      manualNetplayDisconnectRef.current = true;
+      if (netplayReconnectTimeoutRef.current) {
+        window.clearTimeout(netplayReconnectTimeoutRef.current);
+        netplayReconnectTimeoutRef.current = null;
+      }
+      netplayClientRef.current?.disconnect();
+    },
+    []
+  );
 
   useEffect(() => {
+    if (pauseTab === 'menu' || pauseTab === 'settings') {
+      return;
+    }
+
     if (visiblePauseTabs.some((tab) => tab.id === pauseTab)) {
       return;
     }
 
-    setPauseTab('controls');
+    setPauseTab('settings');
   }, [pauseTab, visiblePauseTabs]);
 
   useEffect(() => {
@@ -1995,17 +2121,6 @@ function App() {
       ...current,
       [platform]: nextPreferences
     }));
-    setActivePlayer((current) =>
-      current && current.game.platform === platform
-        ? {
-            ...current,
-            preferences: {
-              ...nextPreferences,
-              controlBindings: current.preferences.controlBindings
-            }
-          }
-        : current
-    );
 
     if (!bridge) {
       return nextPreferences;
@@ -2014,17 +2129,6 @@ function App() {
     const saved = await bridge.saveEmbeddedPreferences(platform, patch);
     setEmbeddedPreferencesByPlatform(saved);
     const resolvedPreferences = saved[platform] ?? nextPreferences;
-    setActivePlayer((current) =>
-      current && current.game.platform === platform
-        ? {
-            ...current,
-            preferences: {
-              ...resolvedPreferences,
-              controlBindings: current.preferences.controlBindings
-            }
-          }
-        : current
-    );
 
     return resolvedPreferences;
   };
@@ -2046,17 +2150,6 @@ function App() {
       ...current,
       [game.id]: nextBindings
     }));
-    setActivePlayer((current) =>
-      current && current.game.id === game.id
-        ? {
-            ...current,
-            preferences: {
-              ...current.preferences,
-              controlBindings: nextBindings
-            }
-          }
-        : current
-    );
 
     if (!bridge) {
       if (activePlayer && activePlayerRuntime === 'emulatorjs' && activePlayer.game.id === game.id) {
@@ -2070,17 +2163,6 @@ function App() {
     const resolvedBindings = saved[game.id] ?? nextBindings;
 
     setGameControlBindingsByGameId(saved);
-    setActivePlayer((current) =>
-      current && current.game.id === game.id
-        ? {
-            ...current,
-            preferences: {
-              ...current.preferences,
-              controlBindings: resolvedBindings
-            }
-          }
-        : current
-    );
 
     if (activePlayer && activePlayerRuntime === 'emulatorjs' && activePlayer.game.id === game.id) {
       void sendPlayerFrameCommand('set-control-bindings', { controlBindings: resolvedBindings }).catch(() => undefined);
@@ -2556,13 +2638,30 @@ function App() {
     }
   };
 
-  const openPauseMenu = async () => {
-    if (activeNetplaySessionRef.current) {
-      setStatusText('Во время онлайн-сеанса пауза, слоты и перезапуск отключены.');
+  const openPauseMenu = async (options?: { syncNetplay?: boolean; requestedByRemote?: boolean }) => {
+    const syncNetplay = options?.syncNetplay ?? true;
+    const requestedByRemote = options?.requestedByRemote ?? false;
+    const currentPlayer = activePlayerRef.current;
+
+    if (playerErrorRef.current) {
       return;
     }
 
-    if (!activePlayer || playerError) {
+    if (isHostStreamGuestSession()) {
+      releasePressedActions();
+      setPauseMenuOpen(true);
+      setPauseTab('menu');
+      setPauseReturnView('menu');
+      setRebindingAction(null);
+      setNetplayPauseMessage(requestedByRemote ? 'Хост поставил игру на паузу.' : 'Вы поставили комнату на паузу.');
+
+      if (syncNetplay) {
+        netplayClientRef.current?.sendSignal('pause-request', { paused: true });
+      }
+      return;
+    }
+
+    if (!currentPlayer) {
       return;
     }
 
@@ -2570,20 +2669,52 @@ function App() {
       releasePressedActions();
       await pauseCurrentPlayer();
       setPauseMenuOpen(true);
-      setPauseTab('controls');
+      setPauseTab('menu');
+      setPauseReturnView('menu');
       setRebindingAction(null);
-      await refreshSaveSlots(activePlayer.game.id);
-      await refreshAutoSave(activePlayer.game.id);
+      setNetplayPauseMessage(requestedByRemote ? 'Друг поставил игру на паузу.' : 'Пауза синхронизирована между игроками.');
+      await refreshSaveSlots(currentPlayer.game.id);
+      await refreshAutoSave(currentPlayer.game.id);
+
+      if (syncNetplay) {
+        broadcastNetplayPauseState(true);
+      }
     } catch (error) {
       setStatusText(error instanceof Error ? error.message : 'Не удалось открыть меню паузы.');
     }
   };
 
-  const closePauseMenu = () => {
+  const closePauseMenu = (options?: { syncNetplay?: boolean }) => {
+    const syncNetplay = options?.syncNetplay ?? true;
     releasePressedActions();
     setPauseMenuOpen(false);
+    setPauseTab('menu');
+    setPauseReturnView('menu');
     setRebindingAction(null);
-    void resumeCurrentPlayer().catch(() => undefined);
+
+    if (isHostStreamGuestSession()) {
+      if (syncNetplay) {
+        netplayClientRef.current?.sendSignal('pause-request', { paused: false });
+      }
+      return;
+    }
+
+    if (activePlayerRef.current) {
+      void resumeCurrentPlayer().catch(() => undefined);
+    }
+    if (syncNetplay) {
+      broadcastNetplayPauseState(false);
+    }
+  };
+
+  const openPauseSettingsMenu = () => {
+    setPauseReturnView('menu');
+    setPauseTab('settings');
+  };
+
+  const openPauseDetailView = (nextTab: PauseTabId, returnView: 'menu' | 'settings' = 'settings') => {
+    setPauseReturnView(returnView);
+    setPauseTab(nextTab);
   };
 
   const closePlayer = () => {
@@ -2690,7 +2821,7 @@ function App() {
       disposed = true;
       stopPlayer();
     };
-  }, [activePlayer, activePlayerRuntime]);
+  }, [activePlayer?.game.id, activePlayer?.romBase64, activePlayerRuntime]);
 
   useEffect(() => {
     if (!activePlayer || activePlayerRuntime !== 'emulatorjs' || !playerFrameLoaded) {
@@ -2726,7 +2857,7 @@ function App() {
       },
       '*'
     );
-  }, [activePlayer, activePlayerRuntime, playerFrameLoaded]);
+  }, [activePlayer?.game.id, activePlayer?.romBase64, activePlayerRuntime, playerFrameLoaded, playerFrameSessionId]);
 
   useEffect(() => {
     if (
@@ -2947,7 +3078,6 @@ function App() {
 
         if (event.code === 'Escape') {
           setRebindingAction(null);
-          setStatusText('Переназначение отменено.');
           return;
         }
 
@@ -2960,7 +3090,6 @@ function App() {
         void saveGameControlBindingPatch({
           [rebindingAction]: nextBinding
         }).then(() => {
-          setStatusText(`Кнопка ${controlActionLabels[rebindingAction]} назначена на ${formatBindingLabel(nextBinding)}.`);
           setRebindingAction(null);
         });
         return;
@@ -3015,16 +3144,22 @@ function App() {
       event.preventDefault();
       event.stopPropagation();
 
-      if (remoteStreamSession) {
-        handleNetplayLeaveRoom();
+      if (pauseMenuOpen) {
+        closePauseMenu();
         return;
       }
 
-      if (pauseMenuOpen) {
-        closePauseMenu();
-      } else {
+      if (remoteStreamSession) {
         void openPauseMenu();
+        return;
       }
+
+      if (activeNetplaySessionRef.current) {
+        void openPauseMenu();
+        return;
+      }
+
+      void openPauseMenu();
     };
 
     const handleKeyUp = (event: KeyboardEvent) => {
@@ -3066,7 +3201,6 @@ function App() {
 
         if (event.code === 'Escape') {
           setRebindingAction(null);
-          setStatusText('Переназначение отменено.');
           return;
         }
 
@@ -3079,7 +3213,6 @@ function App() {
         void saveGameControlBindingPatch({
           [rebindingAction]: nextBinding
         }).then(() => {
-          setStatusText(`Кнопка ${controlActionLabels[rebindingAction]} назначена на ${formatBindingLabel(nextBinding)}.`);
           setRebindingAction(null);
         });
         return;
@@ -3172,9 +3305,14 @@ function App() {
       return;
     }
 
-    const trimmedFriendId = friendDraft.friendId.trim();
+    const trimmedFriendId = friendDraft.friendId.trim().toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 5);
     if (!trimmedFriendId) {
       setStatusText('Введите ID друга.');
+      return;
+    }
+
+    if (trimmedFriendId.length > 5) {
+      setStatusText('ID друга должен быть не длиннее 5 символов.');
       return;
     }
 
@@ -3390,23 +3528,36 @@ function App() {
   };
 
   const handleConnectNetplay = () => {
+    manualNetplayDisconnectRef.current = false;
+    if (netplayReconnectTimeoutRef.current) {
+      window.clearTimeout(netplayReconnectTimeoutRef.current);
+      netplayReconnectTimeoutRef.current = null;
+    }
     netplayClientRef.current?.disconnect();
     setNetplayError(null);
     setNetplayInvites([]);
     setNetplayRoom(null);
-    setNetplayPanelOpen(true);
+    setNetplayConnectionState(isNetplayConnected ? 'reconnecting' : 'connecting');
     resetNetplaySyncState();
 
     const client = createNetplayClient({
       serverUrl: signalingUrl,
       userId: selfNetplayUserId,
       displayName: profile.displayName,
+      avatarDataUrl: profile.avatarDataUrl,
       onOpen: () => {
+        if (netplayReconnectTimeoutRef.current) {
+          window.clearTimeout(netplayReconnectTimeoutRef.current);
+          netplayReconnectTimeoutRef.current = null;
+        }
         setIsNetplayConnected(true);
+        setNetplayConnectionState('connected');
         setStatusText(`Онлайн подключен: ${signalingUrl}`);
       },
       onClose: (reason) => {
+        const shouldReconnect = !manualNetplayDisconnectRef.current;
         setIsNetplayConnected(false);
+        setNetplayConnectionState(shouldReconnect ? 'reconnecting' : 'offline');
         setNetplayRoom(null);
         setNetplayUsers([]);
         setPendingNetplayLaunchRoom(null);
@@ -3417,10 +3568,21 @@ function App() {
         activeNetplaySessionRef.current = null;
         setActiveNetplaySession(null);
         resetNetplaySyncState();
+        netplayClientRef.current = null;
+        if (shouldReconnect) {
+          setStatusText('Соединение потеряно. Пробую переподключиться...');
+          netplayReconnectTimeoutRef.current = window.setTimeout(() => {
+            netplayReconnectTimeoutRef.current = null;
+            handleConnectNetplay();
+          }, 1800);
+          return;
+        }
+
         setStatusText(reason || 'Онлайн отключен.');
       },
       onPresence: (users) => {
         setNetplayUsers(users);
+        setNetplayError(null);
       },
       onRoom: (room) => {
         setNetplayRoom(room);
@@ -3480,6 +3642,37 @@ function App() {
       onSignal: (signal) => {
         const session = activeNetplaySessionRef.current;
         const currentPlayer = activePlayerRef.current;
+
+        if (signal.channel === 'pause-request' && isNetplayPauseSignalPayload(signal.payload)) {
+          if (!session || session.launchMode !== 'host-stream') {
+            return;
+          }
+
+          if (session.localPlayerIndex === 1) {
+            if (signal.payload.paused) {
+              void openPauseMenu({ requestedByRemote: true });
+              setStatusText('Друг поставил комнату на паузу.');
+            } else if (pauseMenuOpenRef.current) {
+              closePauseMenu();
+              setStatusText('Друг снял комнату с паузы.');
+            }
+          }
+
+          return;
+        }
+
+        if (signal.channel === 'pause-state' && isNetplayPauseSignalPayload(signal.payload)) {
+          if (!session || session.launchMode !== 'host-stream' || session.localPlayerIndex !== 2) {
+            return;
+          }
+
+          if (signal.payload.paused) {
+            void openPauseMenu({ syncNetplay: false, requestedByRemote: true });
+          } else if (pauseMenuOpenRef.current) {
+            closePauseMenu({ syncNetplay: false });
+          }
+          return;
+        }
 
         if (signal.channel === 'host-input') {
           if (
@@ -3573,15 +3766,23 @@ function App() {
   };
 
   const handleDisconnectNetplay = () => {
+    manualNetplayDisconnectRef.current = true;
+    if (netplayReconnectTimeoutRef.current) {
+      window.clearTimeout(netplayReconnectTimeoutRef.current);
+      netplayReconnectTimeoutRef.current = null;
+    }
     netplayClientRef.current?.disconnect();
     netplayClientRef.current = null;
     setIsNetplayConnected(false);
-    setNetplayPanelOpen(false);
+    setNetplayConnectionState('offline');
     setNetplayUsers([]);
     setNetplayRoom(null);
     setNetplayInvites([]);
     setNetplayError(null);
     setPendingNetplayLaunchRoom(null);
+    setPauseMenuOpen(false);
+    setPauseTab('menu');
+    setRebindingAction(null);
     releasePressedActions();
     releaseRemotePressedActions();
     clearNetplayPeerConnection(true);
@@ -3648,6 +3849,9 @@ function App() {
 
     netplayClientRef.current.leaveRoom();
     setPendingNetplayLaunchRoom(null);
+    setPauseMenuOpen(false);
+    setPauseTab('menu');
+    setRebindingAction(null);
     releasePressedActions();
     releaseRemotePressedActions();
     clearNetplayPeerConnection(true);
@@ -3756,7 +3960,6 @@ function App() {
 
       if (activePlayerRuntime === 'emulatorjs') {
         await applyCurrentPlayerAudio(value, currentEmbeddedPreferences.muted);
-        setStatusText(`Громкость: ${value}%`);
         return;
       }
 
@@ -3772,10 +3975,27 @@ function App() {
         instance.sendCommand(command);
       }
 
-      setStatusText(`Громкость: ${value}%`);
     } catch (error) {
       setStatusText(error instanceof Error ? error.message : 'Не удалось изменить громкость.');
     }
+  };
+
+  const isHostStreamGuestSession = (): boolean => {
+    const session = activeNetplaySessionRef.current;
+    return Boolean(session && session.launchMode === 'host-stream' && session.localPlayerIndex === 2 && remoteStreamSessionRef.current);
+  };
+
+  const isHostStreamHostSession = (): boolean => {
+    const session = activeNetplaySessionRef.current;
+    return Boolean(session && session.launchMode === 'host-stream' && session.localPlayerIndex === 1 && activePlayerRef.current);
+  };
+
+  const broadcastNetplayPauseState = (paused: boolean) => {
+    if (!isHostStreamHostSession()) {
+      return;
+    }
+
+    netplayClientRef.current?.sendSignal('pause-state', { paused });
   };
 
   const handleMutedChange = async () => {
@@ -3789,7 +4009,6 @@ function App() {
         playerInstanceRef.current?.sendCommand('MUTE');
       }
 
-      setStatusText(nextMuted ? 'Звук выключен.' : 'Звук включен.');
     } catch (error) {
       setStatusText(error instanceof Error ? error.message : 'Не удалось обновить звук.');
     }
@@ -3803,7 +4022,6 @@ function App() {
     try {
       const nextPreferences = await saveEmbeddedPreferencePatch({ videoFilter: value });
       await applyCurrentPlayerVideo(nextPreferences);
-      setStatusText(`Видеофильтр "${formatVideoFilterLabel(value)}" сохранен для ${formatPlatform(preferencePlatform ?? 'NES')}.`);
     } catch (error) {
       setStatusText(error instanceof Error ? error.message : 'Не удалось обновить видеофильтр.');
     }
@@ -3817,7 +4035,6 @@ function App() {
     try {
       const nextPreferences = await saveEmbeddedPreferencePatch({ aspectRatio: value });
       await applyCurrentPlayerVideo(nextPreferences);
-      setStatusText(`Соотношение сторон "${formatAspectRatioLabel(value)}" сохранено для ${formatPlatform(preferencePlatform ?? 'NES')}.`);
     } catch (error) {
       setStatusText(error instanceof Error ? error.message : 'Не удалось обновить соотношение сторон.');
     }
@@ -3828,7 +4045,6 @@ function App() {
     try {
       const nextPreferences = await saveEmbeddedPreferencePatch({ integerScale: nextValue });
       await applyCurrentPlayerVideo(nextPreferences);
-      setStatusText(nextValue ? 'Целочисленный масштаб включен.' : 'Целочисленный масштаб выключен.');
     } catch (error) {
       setStatusText(error instanceof Error ? error.message : 'Не удалось обновить масштабирование.');
     }
@@ -3842,8 +4058,6 @@ function App() {
     try {
       const nextPreferences = await saveEmbeddedPreferencePatch({ secondScreenLayout: value });
       await syncLiveDualScreenPreferences(nextPreferences);
-
-      setStatusText(`Расположение второго экрана: ${formatSecondScreenLayoutLabel(value)}.`);
     } catch (error) {
       setStatusText(error instanceof Error ? error.message : 'Не удалось обновить расположение второго экрана.');
     }
@@ -3857,8 +4071,6 @@ function App() {
     try {
       const nextPreferences = await saveEmbeddedPreferencePatch({ primaryScreen: value });
       await syncLiveDualScreenPreferences(nextPreferences);
-
-      setStatusText(`Основной экран: ${formatPrimaryScreenLabel(value)}.`);
     } catch (error) {
       setStatusText(error instanceof Error ? error.message : 'Не удалось обновить основной экран.');
     }
@@ -3881,7 +4093,6 @@ function App() {
     try {
       const nextPreferences = await saveEmbeddedPreferencePatch({ secondScreenSizePercent: nextValue });
       await syncLiveDualScreenPreferences(nextPreferences);
-      setStatusText(`Размер зоны второго экрана: ${nextValue}%.`);
     } catch (error) {
       setStatusText(error instanceof Error ? error.message : 'Не удалось обновить размер зоны второго экрана.');
     }
@@ -3895,7 +4106,6 @@ function App() {
     try {
       const nextPreferences = await saveEmbeddedPreferencePatch({ primaryScreenScaleMode: value });
       await syncLiveDualScreenPreferences(nextPreferences);
-      setStatusText(`Основной экран: режим "${formatScreenScaleModeLabel(value)}".`);
     } catch (error) {
       setStatusText(error instanceof Error ? error.message : 'Не удалось обновить режим масштабирования основного экрана.');
     }
@@ -3909,7 +4119,6 @@ function App() {
     try {
       const nextPreferences = await saveEmbeddedPreferencePatch({ secondaryScreenScaleMode: value });
       await syncLiveDualScreenPreferences(nextPreferences);
-      setStatusText(`Дополнительный экран: режим "${formatScreenScaleModeLabel(value)}".`);
     } catch (error) {
       setStatusText(error instanceof Error ? error.message : 'Не удалось обновить режим масштабирования второго экрана.');
     }
@@ -4013,12 +4222,21 @@ function App() {
   const handleResetControls = async () => {
     await saveGameControlBindingPatch(defaultControlBindings());
     setRebindingAction(null);
-    setStatusText('Управление для этой игры сброшено на стандартную раскладку.');
+  };
+
+  const closeLibraryControls = () => {
+    setLibraryControlsOpen(false);
+    setRebindingAction(null);
   };
 
   const activeConnectedGamepad = connectedGamepads[0] ?? null;
   const supportsEmbeddedVideoControls = activePlayerRuntime === 'emulatorjs' && activePlayer ? supportsLiveVideoSettings(activePlayer.game.platform) : false;
-  const renderControlBindingButton = (action: ControlAction, kind: ControlClusterKind) => {
+  const renderControlBindingButton = (
+    action: ControlAction,
+    kind: ControlClusterKind,
+    extraClasses: string[] = [],
+    displayMode: 'full' | 'overlay' = 'full'
+  ) => {
     const classes = ['gamepad-binding', `gamepad-binding-${kind}`];
 
     if (kind === 'dpad') {
@@ -4029,56 +4247,126 @@ function App() {
       classes.push(`is-face-${action}`);
     }
 
+    if (kind === 'row') {
+      classes.push(`is-row-${action}`);
+    }
+
+    classes.push(...extraClasses);
+    if (displayMode === 'overlay') {
+      classes.push('gamepad-binding-overlay');
+    }
+
     return (
       <button
         key={action}
+        aria-label={`${controlActionLabels[action]}: ${formatBindingLabel(currentControlBindings[action])}`}
         className={rebindingAction === action ? `${classes.join(' ')} active-binding` : classes.join(' ')}
         onClick={() => {
           setRebindingAction(action);
-          setStatusText(`Нажмите новую клавишу для ${controlActionLabels[action]}.`);
         }}
       >
-        <span className="gamepad-binding-label">{controlActionLabels[action]}</span>
+        {displayMode === 'full' ? <span className="gamepad-binding-label">{controlActionLabels[action]}</span> : null}
         <strong className="gamepad-binding-value">
-          {rebindingAction === action ? 'Нажмите клавишу...' : formatBindingLabel(currentControlBindings[action])}
+          {rebindingAction === action
+            ? displayMode === 'overlay'
+              ? '...'
+              : 'Нажмите клавишу...'
+            : formatBindingLabel(currentControlBindings[action])}
         </strong>
       </button>
     );
   };
 
-  const renderControlsEditor = (game: LibraryGame) => (
-    <div className="pause-section">
-      <p className="hint-text">
-        Нажмите на кнопку ниже, затем новую клавишу. Раскладка применяется сразу и сохраняется только для игры «{game.title}».
-      </p>
-      <div className="inline-actions">
-        <button className="secondary-action compact-action" onClick={() => void handleResetControls()}>
-          Сбросить по умолчанию
-        </button>
-      </div>
-      <div className="runtime-note">
-        <strong>{activeConnectedGamepad ? `Геймпад: ${activeConnectedGamepad.id}` : 'Геймпад не подключен'}</strong>
-        <p className="hint-text">
-          {activeConnectedGamepad
-            ? 'Первый подключенный геймпад уже работает. Здесь вы меняете именно клавиатурную раскладку для этой игры.'
-            : 'Подключите геймпад для игры с контроллера. Здесь можно отдельно настроить клавиатуру для этой игры.'}
-        </p>
-      </div>
-      <div className="gamepad-layout">
-        {currentControlLayout.map((cluster) => (
-          <section key={cluster.id} className="gamepad-cluster-card">
-            <div className="gamepad-cluster-header">
-              <span className="eyebrow">{cluster.label}</span>
-              <span className="chip neutral">{cluster.actions.length}</span>
+  const renderControlsEditor = (game: LibraryGame) => {
+    const dpadCluster = currentControlLayout.find((cluster) => cluster.kind === 'dpad') ?? null;
+    const faceCluster = currentControlLayout.find((cluster) => cluster.kind === 'face') ?? null;
+    const systemCluster = currentControlLayout.find((cluster) => cluster.id === 'system') ?? null;
+    const extraRowClusters = currentControlLayout.filter((cluster) => cluster.kind === 'row' && cluster.id !== 'system');
+    const faceClusterClassName = [
+      'gamepad-cluster',
+      'gamepad-cluster-face',
+      'controller-face-cluster',
+      faceCluster && faceCluster.actions.length <= 2 ? 'controller-face-cluster-dual' : ''
+    ]
+      .filter(Boolean)
+      .join(' ');
+
+    return (
+      <div className="pause-section">
+          <p className="hint-text">
+            Нажмите на кнопку на схеме геймпада, затем новую клавишу. Раскладка применяется сразу и сохраняется только для игры «{game.title}».
+          </p>
+          <div className="inline-actions">
+            <button className="secondary-action compact-action" onClick={() => void handleResetControls()}>
+              Сбросить по умолчанию
+            </button>
+          </div>
+          <div className="runtime-note">
+            <strong>{activeConnectedGamepad ? `Геймпад: ${activeConnectedGamepad.id}` : 'Геймпад не подключен'}</strong>
+            <p className="hint-text">
+              {activeConnectedGamepad
+                ? 'Первый подключенный геймпад уже работает. Здесь вы меняете именно клавиатурную раскладку для этой игры.'
+                : 'Подключите геймпад для игры с контроллера. Здесь можно отдельно настроить клавиатуру для этой игры.'}
+            </p>
+          </div>
+          <div className="controller-stage">
+            <div className="controller-shell">
+              <div className="controller-cable" aria-hidden="true" />
+              <div className="controller-frame">
+                <div className="controller-surface">
+                <section className="controller-zone controller-zone-dpad">
+                  {dpadCluster ? (
+                    <div className="gamepad-cluster gamepad-cluster-dpad controller-dpad-cluster">
+                      {dpadCluster.actions.map((action) => renderControlBindingButton(action, 'dpad', [], 'overlay'))}
+                    </div>
+                  ) : null}
+                </section>
+                <section className="controller-zone controller-zone-center">
+                  <div className="controller-center-bars" aria-hidden="true">
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                  {systemCluster ? (
+                    <div className="controller-system-row">
+                      {systemCluster.actions.map((action) =>
+                        renderControlBindingButton(action, 'row', ['gamepad-binding-system'], 'overlay')
+                      )}
+                    </div>
+                  ) : null}
+                  <div className="controller-system-slots" aria-hidden="true">
+                    <span />
+                    <span />
+                  </div>
+                </section>
+                <section className="controller-zone controller-zone-face">
+                  {faceCluster ? (
+                    <div className={faceClusterClassName}>
+                      {faceCluster.actions.map((action) => renderControlBindingButton(action, 'face', [], 'overlay'))}
+                    </div>
+                  ) : null}
+                </section>
+                </div>
+              </div>
             </div>
-            <div className={`gamepad-cluster gamepad-cluster-${cluster.kind}`}>
-              {cluster.actions.map((action) => renderControlBindingButton(action, cluster.kind))}
-            </div>
-          </section>
-        ))}
+            {extraRowClusters.length ? (
+              <div className="controller-extra-grid">
+                {extraRowClusters.map((cluster) => (
+                  <section key={cluster.id} className="controller-extra-card">
+                    <div className="controller-zone-copy">
+                      <span className="eyebrow">{cluster.label}</span>
+                    </div>
+                    <div className="gamepad-cluster gamepad-cluster-row controller-extra-row">
+                      {cluster.actions.map((action) => renderControlBindingButton(action, 'row', ['gamepad-binding-extra']))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            ) : null}
+          </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   if (isLoading) {
     return <div className="app-shell"><section className="panel loading-card">Загрузка Emusol...</section></div>;
@@ -4086,7 +4374,7 @@ function App() {
 
   if (remoteStreamSession) {
     return (
-      <div className="player-shell remote-stream-shell">
+      <div className={pauseMenuOpen ? 'player-shell remote-stream-shell paused' : 'player-shell remote-stream-shell'}>
         <video
           ref={remoteVideoRef}
           className={remoteStreamTransport === 'webrtc' ? 'player-stream-video' : 'player-stream-video hidden-stream'}
@@ -4131,6 +4419,31 @@ function App() {
             Выйти
           </button>
         </div>
+
+        {pauseMenuOpen ? (
+          <div className="pause-overlay">
+            <section className="pause-menu pause-menu-launcher">
+              <div className="pause-launcher-shell">
+                <div className="pause-launcher-frame pause-launcher-frame-settings">
+                  <div className="pause-launcher-header">
+                    <span className="eyebrow">Пауза</span>
+                  </div>
+                  <div className="pause-launcher-actions">
+                    <button className="pause-launcher-button pause-launcher-button-primary" onClick={() => closePauseMenu()}>
+                      Продолжить
+                    </button>
+                    <button className="pause-launcher-button pause-launcher-button-neutral" onClick={handleNetplayLeaveRoom}>
+                      Выйти из комнаты
+                    </button>
+                  </div>
+                  <div className="pause-launcher-footer">
+                    <span>{netplayPauseMessage}</span>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -4170,91 +4483,140 @@ function App() {
 
         {pauseMenuOpen ? (
           <div className="pause-overlay">
-            <section className="pause-menu">
-              <div className="pause-header">
-                <div>
-                  <span className="eyebrow">Пауза</span>
-                  <h2>{activePlayer.game.title}</h2>
-                  <div className="pause-meta">
-                    <span className="chip neutral">Платформа: {formatPlatform(activePlayer.game.platform)}</span>
-                    <span className="chip neutral">Быстрый слот: {currentEmbeddedPreferences.quickSlot}</span>
-                    <span className="chip neutral">F5 сохранить</span>
-                    <span className="chip neutral">F8 загрузить</span>
+            <section className={pauseTab === 'menu' || pauseTab === 'settings' ? 'pause-menu pause-menu-launcher' : 'pause-menu'}>
+              {pauseTab === 'menu' ? (
+                <div className="pause-launcher-shell">
+                  <div className="pause-launcher-frame">
+                    <div className="pause-launcher-header">
+                      <span className="eyebrow">Пауза</span>
+                    </div>
+                    <div className="pause-launcher-actions">
+                      <button className="pause-launcher-button pause-launcher-button-primary" onClick={() => closePauseMenu()}>
+                        Продолжить
+                      </button>
+                      <button
+                        className="pause-launcher-button pause-launcher-button-save"
+                        disabled={isBusyWithSlot !== null}
+                        onClick={() => void handleSaveSlot(currentEmbeddedPreferences.quickSlot)}
+                      >
+                        Быстро сохранить
+                      </button>
+                      <button
+                        className="pause-launcher-button pause-launcher-button-load"
+                        disabled={isBusyWithSlot !== null || !saveSlots.some((slot) => slot.slot === currentEmbeddedPreferences.quickSlot && slot.hasState)}
+                        onClick={() => void handleLoadSlot(currentEmbeddedPreferences.quickSlot)}
+                      >
+                        Быстро загрузить
+                      </button>
+                      <button className="pause-launcher-button pause-launcher-button-slots" onClick={() => openPauseDetailView('saves', 'menu')}>
+                        Сохранить / загрузить
+                      </button>
+                      <button className="pause-launcher-button pause-launcher-button-neutral" onClick={openPauseSettingsMenu}>
+                        Настройки
+                      </button>
+                      <button className="pause-launcher-button pause-launcher-button-neutral" onClick={closePlayer}>
+                        Выйти в библиотеку
+                      </button>
+                    </div>
+                    <div className="pause-launcher-footer">
+                      <span>Нажмите ESC для продолжения</span>
+                    </div>
                   </div>
                 </div>
-                <div className="pause-header-actions">
-                  <button className="secondary-action compact-action" disabled={isBusyWithSlot !== null} onClick={() => void handleSaveSlot(currentEmbeddedPreferences.quickSlot)}>
-                    Быстро сохранить
-                  </button>
-                  <button
-                    className="secondary-action compact-action"
-                    disabled={isBusyWithSlot !== null || !saveSlots.some((slot) => slot.slot === currentEmbeddedPreferences.quickSlot && slot.hasState)}
-                    onClick={() => void handleLoadSlot(currentEmbeddedPreferences.quickSlot)}
-                  >
-                    Быстро загрузить
-                  </button>
-                  <button className="secondary-action compact-action" onClick={() => void handleRestartGame()}>
-                    Перезапуск
-                  </button>
-                  <button className="primary-action compact-action" onClick={closePauseMenu}>
-                    Продолжить
-                  </button>
-                  <button className="secondary-action" onClick={closePlayer}>
-                    Выйти в библиотеку
-                  </button>
+              ) : pauseTab === 'settings' ? (
+                <div className="pause-launcher-shell">
+                  <div className="pause-launcher-frame pause-launcher-frame-settings">
+                    <div className="pause-launcher-header">
+                      <span className="eyebrow">Настройки</span>
+                    </div>
+                    <div className="pause-launcher-actions">
+                      <button className="pause-launcher-button pause-launcher-button-primary" onClick={() => openPauseDetailView('controls')}>
+                        Управление
+                      </button>
+                      <button className="pause-launcher-button pause-launcher-button-save" onClick={() => openPauseDetailView('audio')}>
+                        Звук
+                      </button>
+                      <button className="pause-launcher-button pause-launcher-button-load" onClick={() => openPauseDetailView('video')}>
+                        Видео
+                      </button>
+                      {visiblePauseTabs.some((tab) => tab.id === 'screens') ? (
+                        <button className="pause-launcher-button pause-launcher-button-slots" onClick={() => openPauseDetailView('screens')}>
+                          Экраны
+                        </button>
+                      ) : null}
+                      <button className="pause-launcher-button pause-launcher-button-neutral" onClick={() => openPauseDetailView('saves')}>
+                        Сохранить / загрузить
+                      </button>
+                    </div>
+                    <div className="pause-launcher-footer">
+                      <button className="pause-launcher-footer-button" onClick={() => setPauseTab('menu')}>
+                        Назад
+                      </button>
+                      <span>Выберите раздел настроек</span>
+                    </div>
+                  </div>
                 </div>
-              </div>
-
-              <div className="pause-tabs">
-                {visiblePauseTabs.map((tab) => (
-                  <button
-                    key={tab.id}
-                    className={pauseTab === tab.id ? 'platform-pill active' : 'platform-pill'}
-                    onClick={() => setPauseTab(tab.id)}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
+              ) : (
+                <>
+                  <div className="pause-header pause-detail-header">
+                    <div>
+                      <span className="eyebrow">Настройки</span>
+                      <h2>{getPauseSectionTitle(pauseTab)}</h2>
+                    </div>
+                    <div className="pause-detail-actions">
+                      <button className="secondary-action compact-action" onClick={() => setPauseTab(pauseReturnView)}>
+                        Назад
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
 
               {pauseTab === 'controls' ? (
                 renderControlsEditor(activePlayer.game)
               ) : null}
 
               {pauseTab === 'audio' ? (
-                <div className="pause-section">
-                  <div className="audio-row">
-                    <span>Громкость</span>
-                    <strong>{currentEmbeddedPreferences.volumePercent}%</strong>
-                  </div>
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    value={currentEmbeddedPreferences.volumePercent}
-                    onChange={(event) => void handleVolumeChange(Number(event.target.value))}
-                  />
-                  <div className="inline-actions">
-                    <button className={currentEmbeddedPreferences.muted ? 'switch-toggle active' : 'switch-toggle'} onClick={() => void handleMutedChange()}>
-                      {currentEmbeddedPreferences.muted ? 'Звук выключен' : 'Выключить звук'}
-                    </button>
-                  </div>
-                  <p className="hint-text">
-                    Звук меняется во время игры. Если шкала покажет себя грубовато на отдельном ядре, точное значение все равно будет применено на следующем запуске.
-                  </p>
+                <div className="pause-section pause-settings-stack">
+                  <article className="pause-detail-card pause-detail-card-hero">
+                    <div className="audio-row">
+                      <span>Громкость</span>
+                      <strong>{currentEmbeddedPreferences.volumePercent}%</strong>
+                    </div>
+                    <input
+                      className="range-input pause-range-input"
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={currentEmbeddedPreferences.volumePercent}
+                      onChange={(event) => void handleVolumeChange(Number(event.target.value))}
+                    />
+                    <div className="inline-actions">
+                      <button className={currentEmbeddedPreferences.muted ? 'switch-toggle active' : 'switch-toggle'} onClick={() => void handleMutedChange()}>
+                        {currentEmbeddedPreferences.muted ? 'Звук выключен' : 'Выключить звук'}
+                      </button>
+                    </div>
+                  </article>
+                  <article className="pause-detail-card">
+                    <p className="hint-text">
+                      Звук меняется во время игры. Если шкала покажет себя грубовато на отдельном ядре, точное значение все равно будет применено на следующем запуске.
+                    </p>
+                  </article>
                 </div>
               ) : null}
 
               {pauseTab === 'video' ? (
-                <div className="pause-section">
+                <div className="pause-section pause-settings-stack">
                   {activePlayerRuntime === 'nostalgist' || supportsEmbeddedVideoControls ? (
                     <>
-                      <p className="hint-text">
-                        {activePlayerRuntime === 'nostalgist'
-                          ? 'Видеопрофиль сохраняется отдельно для каждой платформы. Новые параметры применятся при следующем запуске этой игры.'
-                          : 'Для N64 видеонастройки применяются сразу в открытой игре и сохраняются как профиль платформы.'}
-                      </p>
-                      <div className="settings-grid">
+                      <article className="pause-detail-card">
+                        <p className="hint-text">
+                          {activePlayerRuntime === 'nostalgist'
+                            ? 'Видеопрофиль сохраняется отдельно для каждой платформы. Новые параметры применятся при следующем запуске этой игры.'
+                            : 'Для N64 видеонастройки применяются сразу в открытой игре и сохраняются как профиль платформы.'}
+                        </p>
+                      </article>
+                      <div className="settings-grid pause-settings-grid">
                         <div className="setting-card">
                           <span className="eyebrow">Фильтр</span>
                           <div className="inline-actions">
@@ -4308,11 +4670,13 @@ function App() {
               ) : null}
 
               {pauseTab === 'screens' ? (
-                <div className="pause-section">
-                  <p className="hint-text">
-                    Для DS можно выбрать основной экран, положение второго, размер второй зоны и режим масштабирования для каждой части отдельно.
-                  </p>
-                  <div className="settings-grid dual-screen-grid">
+                <div className="pause-section pause-settings-stack">
+                  <article className="pause-detail-card">
+                    <p className="hint-text">
+                      Для DS можно выбрать основной экран, положение второго, размер второй зоны и режим масштабирования для каждой части отдельно.
+                    </p>
+                  </article>
+                  <div className="settings-grid dual-screen-grid pause-settings-grid">
                     <div className="setting-card">
                       <span className="eyebrow">Расположение второго экрана</span>
                       <div className="layout-option-grid">
@@ -4402,27 +4766,13 @@ function App() {
               ) : null}
 
               {pauseTab === 'saves' ? (
-                <div className="pause-section">
-                  <p className="hint-text">Выберите слот. Можно записать текущее состояние игры или загрузить уже сохраненный слот.</p>
-                  <article className="slot-card autosave-card">
-                    <div className="slot-preview">
-                      {autoSave.thumbnailDataUrl ? <img src={autoSave.thumbnailDataUrl} alt="Автосейв" /> : <span>Автосейв</span>}
-                    </div>
-                    <strong>Автосейв</strong>
-                    <span>{autoSave.hasState ? `Обновлен: ${formatDate(autoSave.updatedAt)}` : 'Пока не создан'}</span>
-                    <div className="inline-actions">
-                      <button
-                        className="secondary-action compact-action"
-                        disabled={!autoSave.hasState || isBusyWithSlot === 0}
-                        onClick={() => void handleLoadAutoSave()}
-                      >
-                        Загрузить автосейв
-                      </button>
-                    </div>
+                <div className="pause-section pause-settings-stack">
+                  <article className="pause-detail-card">
+                    <p className="hint-text">Выберите один из пяти слотов. В любой слот можно сохранить текущее состояние или загрузиться из него.</p>
                   </article>
-                  <div className="slot-grid">
+                  <div className="slot-grid pause-slot-grid">
                     {saveSlots.map((slot) => (
-                      <article key={slot.slot} className="slot-card">
+                      <article key={slot.slot} className={currentEmbeddedPreferences.quickSlot === slot.slot ? 'slot-card active' : 'slot-card'}>
                         <div className="slot-preview">
                           {slot.thumbnailDataUrl ? <img src={slot.thumbnailDataUrl} alt={`Слот ${slot.slot}`} /> : <span>Слот {slot.slot}</span>}
                         </div>
@@ -4436,19 +4786,31 @@ function App() {
                             {currentEmbeddedPreferences.quickSlot === slot.slot ? 'Быстрый слот' : 'Сделать быстрым'}
                           </button>
                           <button className="primary-action compact-action" disabled={isBusyWithSlot === slot.slot} onClick={() => void handleSaveSlot(slot.slot)}>
-                            Записать
+                            Сохранить в
                           </button>
                           <button
                             className="secondary-action compact-action"
                             disabled={!slot.hasState || isBusyWithSlot === slot.slot}
                             onClick={() => void handleLoadSlot(slot.slot)}
                           >
-                            Загрузить
+                            Загрузить с
                           </button>
                         </div>
                       </article>
                     ))}
                   </div>
+                  {autoSave.hasState ? (
+                    <div className="pause-save-footer">
+                      <span>Автосейв: {formatDate(autoSave.updatedAt)}</span>
+                      <button
+                        className="secondary-action compact-action"
+                        disabled={isBusyWithSlot === 0}
+                        onClick={() => void handleLoadAutoSave()}
+                      >
+                        Загрузить автосейв
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </section>
@@ -4462,23 +4824,35 @@ function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-block">
-          <div className="brand-orb" />
-          <div>
+          <div
+            className="brand-orb platform-brand-orb"
+            style={{ background: `linear-gradient(145deg, ${topbarPlatformPalette[0]}, ${topbarPlatformPalette[1]})` }}
+            aria-label={selectedGame ? `Активная платформа: ${formatPlatform(selectedGame.platform)}` : 'Emusol'}
+            title={selectedGame ? formatPlatform(selectedGame.platform) : 'Emusol'}
+          >
+            <img src={topbarPlatformIconSrc} alt={selectedGame ? formatPlatform(selectedGame.platform) : 'Emusol'} className="platform-brand-orb-icon" />
+          </div>
+          <div className="brand-copy">
             <div className="eyebrow">Emusol</div>
-            <h1>Единый центр эмуляторов</h1>
           </div>
         </div>
 
         <div className="topbar-right">
           <div className="window-actions">
             <button className="window-control" onClick={() => void bridge?.minimizeWindow()} aria-label="Свернуть окно">
-              -
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 12h12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+              </svg>
             </button>
             <button className="window-control" onClick={() => void bridge?.toggleMaximizeWindow()} aria-label="Развернуть окно">
-              □
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="6.5" y="6.5" width="11" height="11" rx="1.8" fill="none" stroke="currentColor" strokeWidth="1.8" />
+              </svg>
             </button>
             <button className="window-control danger" onClick={() => void bridge?.closeWindow()} aria-label="Закрыть окно">
-              ×
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 8l8 8M16 8l-8 8" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+              </svg>
             </button>
           </div>
           <button
@@ -4630,7 +5004,7 @@ function App() {
                 <div className="setting-card">
                   <span className="eyebrow">Состояние сети</span>
                   <div className="info-stack">
-                    <div className="info-line"><span>Подключение</span><strong className="small-strong">{isNetplayConnected ? 'Активно' : 'Отключено'}</strong></div>
+                    <div className="info-line"><span>Подключение</span><strong className="small-strong">{netplayConnectionLabel}</strong></div>
                     <div className="info-line"><span>Ваш ID</span><strong className="small-strong">{selfNetplayUserId}</strong></div>
                     <div className="info-line"><span>Людей в сети</span><strong className="small-strong">{onlineUsers.length}</strong></div>
                   </div>
@@ -4685,6 +5059,81 @@ function App() {
               </button>
               <button className="secondary-action compact-action" onClick={() => handleDismissInvite(activeInvite.id)}>
                 Отклонить
+              </button>
+            </div>
+          </section>
+        </>
+      ) : null}
+
+      {activeFriendProfile ? (
+        <>
+          <button className="screen-dim invite-dim" aria-label="Закрыть профиль друга" onClick={() => setActiveFriendProfileId(null)} />
+          <section className="panel friend-profile-modal">
+            <div className="panel-header">
+              <span className="eyebrow">Друг</span>
+              <button className="primary-action compact-action" onClick={() => setActiveFriendProfileId(null)}>
+                Закрыть
+              </button>
+            </div>
+
+            <div className="friend-profile-header">
+              <div className="friend-profile-avatar" style={activeFriendProfile.avatarDataUrl ? undefined : getFriendAvatarStyle(activeFriendProfile)}>
+                {activeFriendProfile.avatarDataUrl ? (
+                  <img src={activeFriendProfile.avatarDataUrl} alt={activeFriendProfile.id} />
+                ) : (
+                  <span>{getFriendAvatarFallback(activeFriendProfile)}</span>
+                )}
+                <div className={`friend-status-dot ${activeFriendProfile.isOnline ? 'online' : 'offline'}`} />
+              </div>
+              <div className="friend-profile-copy">
+                <strong>{activeFriendProfile.id}</strong>
+                <span>{activeFriendProfile.isOnline ? 'В сети' : 'Не в сети'}</span>
+              </div>
+            </div>
+
+            <div className="settings-grid">
+              <div className="setting-card">
+                <div className="info-line">
+                  <span>Статус</span>
+                  <strong className="small-strong">
+                    {activeFriendProfile.isOnline
+                      ? activeFriendProfile.onlineUser?.roomId
+                        ? 'В сети, уже в комнате'
+                        : 'В сети'
+                      : 'Не в сети'}
+                  </strong>
+                </div>
+                <div className="info-line">
+                  <span>ID</span>
+                  <strong className="small-strong">{activeFriendProfile.id}</strong>
+                </div>
+                <div className="info-line">
+                  <span>Имя</span>
+                  <strong className="small-strong">{activeFriendProfile.onlineUser?.displayName || activeFriendProfile.name || activeFriendProfile.id}</strong>
+                </div>
+              </div>
+            </div>
+
+            <div className="inline-actions">
+              {netplayRoom && activeFriendProfile.isOnline && !activeFriendProfile.onlineUser?.roomId ? (
+                <button
+                  className="primary-action compact-action"
+                  onClick={() => {
+                    handleInviteFriend(activeFriendProfile.onlineUser!.userId);
+                    setActiveFriendProfileId(null);
+                  }}
+                >
+                  Пригласить в комнату
+                </button>
+              ) : null}
+              <button
+                className="secondary-action compact-action danger-action"
+                onClick={() => {
+                  void handleRemoveFriend(activeFriendProfile.id, activeFriendProfile.id);
+                  setActiveFriendProfileId(null);
+                }}
+              >
+                Удалить из друзей
               </button>
             </div>
           </section>
@@ -4778,11 +5227,14 @@ function App() {
                   return (
                     <button key={game.id} className={selectedGame?.id === game.id ? 'game-card active' : 'game-card'} onClick={() => setSelectedGameId(game.id)}>
                       <div className="game-card-art" style={{ background: `linear-gradient(135deg, ${palette[0]}, ${palette[1]})` }}>
-                        {game.coverDataUrl ? (
-                          <img src={game.coverDataUrl} alt={game.title} className="game-card-art-image" />
-                        ) : (
-                          <span>{formatPlatform(game.platform)}</span>
-                        )}
+                      {game.coverDataUrl ? (
+                        <img src={game.coverDataUrl} alt={game.title} className="game-card-art-image" />
+                      ) : (
+                          <div className="platform-art-fallback">
+                            <img src={getPlatformIconSrc(game.platform)} alt={formatPlatform(game.platform)} className="platform-art-icon" />
+                            <span>{formatPlatform(game.platform)}</span>
+                          </div>
+                      )}
                       </div>
                       <div className="game-card-copy">
                         <div className="game-card-head">
@@ -4837,10 +5289,6 @@ function App() {
               <div className="friends-list">
                 <div className="friend-editor-card">
                   <div className="friends-toolbar">
-                    <div className="friends-summary">
-                      <span className="chip neutral">Мои: {friends.length}</span>
-                      <span className="chip neutral">В сети: {onlineUsers.length}</span>
-                    </div>
                     <button
                       className={friendEditorOpen ? 'secondary-action compact-action active-binding' : 'secondary-action compact-action'}
                       onClick={() => {
@@ -4855,9 +5303,9 @@ function App() {
                     <>
                       <input
                         value={friendDraft.friendId}
-                        onChange={(event) => handleFriendDraftChange('friendId', event.target.value)}
-                        placeholder="ID друга"
-                        maxLength={120}
+                        onChange={(event) => handleFriendDraftChange('friendId', event.target.value.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 5))}
+                        placeholder="ID друга до 5 символов"
+                        maxLength={5}
                       />
                       <div className="inline-actions">
                         <button className="primary-action compact-action" onClick={() => void handleSaveFriend()}>
@@ -4867,78 +5315,56 @@ function App() {
                     </>
                   ) : null}
                 </div>
-                {isNetplayConnected ? (
-                  onlineUsers.length ? (
-                    onlineUsers.map((user) => (
-                      <div key={user.userId} className="friend-row">
-                        <div className="friend-avatar">{user.displayName.slice(0, 1).toUpperCase()}</div>
-                        <div className={`friend-status-dot ${user.roomId ? 'playing' : 'online'}`} />
-                        <div className="friend-meta">
-                          <strong>{user.displayName}</strong>
-                          <span>{user.roomId ? 'Уже в комнате' : 'В сети и доступен для приглашения'}</span>
-                        </div>
-                        <div className="friend-actions">
-                          {netplayRoom ? (
-                            <button className="secondary-action compact-action" onClick={() => handleInviteFriend(user.userId)}>
-                              Пригласить
-                            </button>
-                          ) : null}
-                          <span className="friend-state">{user.roomId ? 'Играет' : 'В сети'}</span>
-                        </div>
+                {friendsWithPresence.length ? (
+                  friendsWithPresence.map((friend) => (
+                    <div
+                      key={friend.id}
+                      className="friend-row friend-row-interactive"
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setActiveFriendProfileId(friend.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          setActiveFriendProfileId(friend.id);
+                        }
+                      }}
+                    >
+                      <div className="friend-avatar" style={friend.avatarDataUrl ? undefined : getFriendAvatarStyle(friend)}>
+                        {friend.avatarDataUrl ? <img src={friend.avatarDataUrl} alt={friend.id} /> : <span>{getFriendAvatarFallback(friend)}</span>}
+                        <div className={`friend-status-dot ${friend.isOnline ? 'online' : 'offline'}`} />
                       </div>
-                    ))
-                  ) : (
-                    <p className="hint-text">Сейчас на signaling-сервере больше никого нет.</p>
-                  )
-                ) : (
-                  friends.map((friend) => (
-                    <div key={friend.id} className="friend-row">
-                      <div className="friend-avatar">{friend.id.slice(0, 1).toUpperCase()}</div>
-                      <div className={`friend-status-dot ${friend.status}`} />
                       <div className="friend-meta">
                         <strong>{friend.id}</strong>
-                        <span>{friend.note && friend.status !== 'playing' ? friend.note : formatFriendPresence(friend.status, friend.note)}</span>
+                        <span>{friend.isOnline ? (friend.onlineUser?.roomId ? 'В комнате' : 'В сети') : 'Не в сети'}</span>
                       </div>
                       <div className="friend-actions">
-                        <span className="friend-state">{formatFriendPresence(friend.status, friend.note)}</span>
-                        <button className="secondary-action compact-action danger-action" onClick={() => void handleRemoveFriend(friend.id, friend.id)}>
+                        {netplayRoom && friend.isOnline && !friend.onlineUser?.roomId ? (
+                          <button
+                            className="secondary-action compact-action"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              handleInviteFriend(friend.onlineUser!.userId);
+                            }}
+                          >
+                            Пригласить
+                          </button>
+                        ) : null}
+                        <button
+                          className="secondary-action compact-action danger-action"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void handleRemoveFriend(friend.id, friend.id);
+                          }}
+                        >
                           Удалить
                         </button>
                       </div>
                     </div>
                   ))
-                )}
-                {isNetplayConnected ? (
-                  <div className="friends-local-block">
-                    <div className="friends-group-header">
-                      <span className="eyebrow">Мои друзья</span>
-                      <span className="chip neutral">{friends.length}</span>
-                    </div>
-                    {friends.length ? (
-                      friends.map((friend) => (
-                        <div key={`local-${friend.id}`} className="friend-row">
-                          <div className="friend-avatar">{friend.id.slice(0, 1).toUpperCase()}</div>
-                          <div className={`friend-status-dot ${friend.status}`} />
-                          <div className="friend-meta">
-                            <strong>{friend.id}</strong>
-                            <span>{friend.note && friend.status !== 'playing' ? friend.note : formatFriendPresence(friend.status, friend.note)}</span>
-                          </div>
-                          <div className="friend-actions">
-                            <span className="friend-state">{formatFriendPresence(friend.status, friend.note)}</span>
-                            <button className="secondary-action compact-action danger-action" onClick={() => void handleRemoveFriend(friend.id, friend.id)}>
-                              Удалить
-                            </button>
-                          </div>
-                        </div>
-                      ))
-                    ) : (
-                      <p className="hint-text">Список друзей пока пуст. Добавьте первого друга в блоке выше.</p>
-                    )}
-                  </div>
-                ) : null}
-                {!isNetplayConnected && !friends.length ? (
+                ) : (
                   <p className="hint-text">Список друзей пока пуст. Добавьте первого друга в блоке выше.</p>
-                ) : null}
+                )}
               </div>
             ) : null}
           </section>
@@ -4948,11 +5374,12 @@ function App() {
           {selectedGame ? (
             <>
               <section className="hero-panel">
-                <div className="hero-cover-frame">
+                <div className="hero-cover-frame hero-cover-frame-compact">
                   {selectedGame.coverDataUrl ? (
                     <img src={selectedGame.coverDataUrl} alt={selectedGame.title} className="hero-cover-image" />
                   ) : (
                     <div className="hero-cover-fallback" style={{ background: `linear-gradient(145deg, ${selectedGamePalette?.[0]}, ${selectedGamePalette?.[1]})` }}>
+                      <img src={getPlatformIconSrc(selectedGame.platform)} alt={formatPlatform(selectedGame.platform)} className="hero-cover-platform-icon" />
                       <span>{formatPlatform(selectedGame.platform)}</span>
                       <strong>{selectedGame.title}</strong>
                     </div>
@@ -4960,105 +5387,165 @@ function App() {
                 </div>
                 <div className="hero-copy">
                   <span className="eyebrow">{formatPlatform(selectedGame.platform)}</span>
-                  <div className="hero-title-row">
-                    <h2>{selectedGame.title}</h2>
-                    <span className="chip neutral">{formatLaunchCountLabel(selectedGame.launchCount)}</span>
-                  </div>
-                  <div className="hero-actions">
+                  <h2>{selectedGame.title}</h2>
+                  <div className="hero-actions hero-actions-right">
                     <button className="primary-action" disabled={(!canLaunchSelectedGame && !canConfigureSelectedGame) || isPlayerLoading} onClick={() => void handleLaunchGame()}>
                       {selectedGameActionLabel}
                     </button>
                     <button
-                      className={netplayPanelOpen ? 'secondary-action active-binding' : 'secondary-action'}
-                      onClick={() => setNetplayPanelOpen((current) => !current)}
+                      className={libraryControlsOpen ? 'secondary-action active-binding' : 'secondary-action'}
+                      onClick={() => {
+                        if (libraryControlsOpen) {
+                          closeLibraryControls();
+                          return;
+                        }
+
+                        setLibraryControlsOpen(true);
+                        setRebindingAction(null);
+                      }}
                     >
-                      Онлайн
-                    </button>
-                    <button className="secondary-action danger-action" onClick={() => void handleRemoveGame()}>
-                      Удалить из библиотеки
+                      Настройки управления
                     </button>
                   </div>
-                  {netplayPanelOpen ? (
-                    <section className="panel hero-online-panel">
-                      <div className="panel-header">
-                        <div>
-                          <span className="eyebrow">Онлайн</span>
-                          <h3 className="online-panel-title">Комната</h3>
-                        </div>
-                        <div className="online-panel-chips">
-                          <span className="chip neutral">Стрим от хоста</span>
-                          <span className={isNetplayConnected ? 'chip success' : 'chip neutral'}>
-                            {isNetplayConnected ? 'В сети' : 'Оффлайн'}
-                          </span>
-                        </div>
-                      </div>
-
-                      {!selectedGameNetplaySupported && !netplayRoom ? (
-                        <p className="hint-text">Для этой игры онлайн пока не подключен. Сейчас стриминг от хоста работает для NES, SNES и Mega Drive.</p>
-                      ) : null}
-
-                      {!isNetplayConnected ? (
-                        <div className="inline-actions">
-                          <button className="primary-action compact-action" onClick={() => handleConnectNetplay()}>
-                            Войти в онлайн
-                          </button>
-                        </div>
-                      ) : null}
-
-                      {isNetplayConnected && !netplayRoom && selectedGameNetplaySupported ? (
-                        <>
-                          <div className="inline-actions">
-                            <button className="primary-action compact-action" disabled={!canCreateNetplayRoom} onClick={() => handleCreateNetplayRoom()}>
-                              Создать комнату
-                            </button>
-                            <button className="secondary-action compact-action" onClick={() => handleDisconnectNetplay()}>
-                              Выйти из онлайна
-                            </button>
-                          </div>
-                          <p className="hint-text">Комната запускает стрим от хоста. Второй игрок получает видео и управляет игрой удаленно.</p>
-                        </>
-                      ) : null}
-
-                      {netplayRoom ? (
-                        <>
-                          <div className="online-room-summary">
-                            <div className="online-room-item">
-                              <span>Игроков</span>
-                              <strong>{netplayRoom.members.length} / 2</strong>
-                            </div>
-                            <div className="online-room-item">
-                              <span>Платформа</span>
-                              <strong>{formatPlatform(netplayRoom.platform)}</strong>
-                            </div>
-                          </div>
-                          <p className="hint-text">{netplaySyncStatus}</p>
-                          <div className="inline-actions">
-                            <button className={currentNetplayMember?.ready ? 'switch-toggle active' : 'switch-toggle'} onClick={() => handleNetplayReadyToggle()}>
-                              {currentNetplayMember?.ready ? 'Готов' : 'Не готов'}
-                            </button>
-                            {isNetplayHost ? (
-                              <button className="primary-action compact-action" onClick={() => handleNetplayLaunchRoom()}>
-                                Запустить
-                              </button>
-                            ) : null}
-                            <button className="secondary-action compact-action" onClick={() => handleNetplayLeaveRoom()}>
-                              Выйти
-                            </button>
-                          </div>
-                        </>
-                      ) : null}
-
-                      {netplayError ? <p className="hint-text">{netplayError}</p> : null}
-                    </section>
-                  ) : null}
                 </div>
               </section>
 
+              <section className="panel hero-online-panel hero-online-panel-below">
+                  <div className="panel-header">
+                    <div>
+                      <span className="eyebrow">Онлайн</span>
+                      <h3 className="online-panel-title">Комната</h3>
+                    </div>
+                    <div className="online-panel-chips">
+                      <span className="chip neutral">Стрим от хоста</span>
+                      <span className={netplayConnectionChipClass}>{netplayConnectionLabel}</span>
+                    </div>
+                  </div>
+
+                  {!selectedGameNetplaySupported && !netplayRoom ? (
+                    <div className="online-state-card online-state-card-warning">
+                      <strong>Для этой игры онлайн пока не подключен</strong>
+                      <p className="hint-text">Сейчас стриминг от хоста работает для NES, SNES и Mega Drive.</p>
+                    </div>
+                  ) : null}
+
+                  {!isNetplayConnected ? (
+                    <div className="online-state-card">
+                      <strong>{netplayConnectionState === 'reconnecting' ? 'Переподключаюсь к сети' : 'Нет подключения к сети'}</strong>
+                      <p className="hint-text">
+                        {netplayConnectionState === 'reconnecting'
+                          ? 'Emusol сам пытается вернуть соединение. Если нужно, можно перезапустить подключение вручную.'
+                          : 'Подключение к signaling-серверу не поднялось. Попробуйте еще раз.'}
+                      </p>
+                      <div className="inline-actions">
+                        <button className="secondary-action compact-action" onClick={() => handleConnectNetplay()}>
+                          {netplayConnectionState === 'reconnecting' ? 'Подключить сейчас' : 'Повторить подключение'}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {isNetplayConnected && !netplayRoom && selectedGameNetplaySupported ? (
+                    <div className="online-state-card">
+                      <strong>Онлайн готов</strong>
+                      <p className="hint-text">
+                        {activeInvite
+                          ? `Есть приглашение от ${activeInvite.fromDisplayName} в "${activeInvite.gameTitle}".`
+                          : 'Создайте комнату для этой игры или подключитесь к приглашению друга.'}
+                      </p>
+                      <div className="inline-actions">
+                        <button className="primary-action compact-action" disabled={!canCreateNetplayRoom} onClick={() => handleCreateNetplayRoom()}>
+                          Создать комнату
+                        </button>
+                        <button
+                          className="secondary-action compact-action"
+                          disabled={!activeInvite}
+                          onClick={() => activeInvite ? handleJoinInvite(activeInvite) : undefined}
+                        >
+                            Подключиться к комнате
+                          </button>
+                      </div>
+                      {additionalInviteCount > 0 ? <span className="chip neutral">Еще приглашений: {additionalInviteCount}</span> : null}
+                    </div>
+                  ) : null}
+
+                  {netplayRoom ? (
+                    <div className="online-room-stack">
+                      <div className="online-room-summary">
+                        <div className="online-room-item">
+                          <span>Комната</span>
+                          <strong>{netplayRoom.id.slice(-6).toUpperCase()}</strong>
+                        </div>
+                        <div className="online-room-item">
+                          <span>Игроков</span>
+                          <strong>{netplayRoom.members.length} / 2</strong>
+                        </div>
+                        <div className="online-room-item">
+                          <span>Готовы</span>
+                          <strong>{readyMembersCount}</strong>
+                        </div>
+                        <div className="online-room-item">
+                          <span>Не готовы</span>
+                          <strong>{notReadyMembersCount}</strong>
+                        </div>
+                      </div>
+                      <div className="online-room-meta">
+                        <span className="chip neutral">{formatPlatform(netplayRoom.platform)}</span>
+                        <span className="chip neutral">{currentNetplayMember?.isHost ? 'Хост' : 'Гость'}</span>
+                      </div>
+                      <div className="online-state-card">
+                        <strong>Состояние комнаты</strong>
+                        <p className="hint-text">{netplaySyncStatus}</p>
+                      </div>
+                      <div className="room-member-list">
+                        {netplayRoom.members.map((member) => (
+                          <div key={member.userId} className="room-member-row">
+                            <div className="friend-avatar room-member-avatar" style={member.avatarDataUrl ? undefined : getAvatarGradientStyle(member.userId)}>
+                              {member.avatarDataUrl ? (
+                                <img src={member.avatarDataUrl} alt={member.displayName} />
+                              ) : (
+                                <span>{getAvatarFallbackText(member.displayName, member.userId)}</span>
+                              )}
+                              <div className={`friend-status-dot ${member.ready ? 'online' : 'offline'}`} />
+                            </div>
+                            <div className="room-member-copy">
+                              <strong>{member.displayName}</strong>
+                              <span>{member.isHost ? 'Хост комнаты' : 'Участник комнаты'}</span>
+                            </div>
+                            <div className="room-member-badges">
+                              <span className={member.ready ? 'chip success' : 'chip neutral'}>
+                                {member.ready ? 'Готов' : 'Не готов'}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="inline-actions">
+                        <button className={currentNetplayMember?.ready ? 'switch-toggle active' : 'switch-toggle'} onClick={() => handleNetplayReadyToggle()}>
+                          {currentNetplayMember?.ready ? 'Готов' : 'Не готов'}
+                        </button>
+                        {isNetplayHost ? (
+                          <button className="primary-action compact-action" onClick={() => handleNetplayLaunchRoom()}>
+                            Запустить
+                          </button>
+                        ) : null}
+                        <button className="secondary-action compact-action" onClick={() => handleNetplayLeaveRoom()}>
+                          Выйти
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {netplayError ? (
+                    <div className="online-state-card online-state-card-danger">
+                      <strong>Ошибка онлайна</strong>
+                      <p className="hint-text">{netplayError}</p>
+                    </div>
+                  ) : null}
+                </section>
+
               {libraryControlsOpen ? (
-                <div className="library-controls-overlay" onClick={() => {
-                  setLibraryControlsOpen(false);
-                  setRebindingAction(null);
-                }}>
+                <div className="library-controls-overlay" onClick={() => closeLibraryControls()}>
                   <section className="pause-menu library-controls-menu" onClick={(event) => event.stopPropagation()}>
                     <div className="pause-header">
                       <div>
@@ -5070,10 +5557,43 @@ function App() {
                         </div>
                       </div>
                       <div className="pause-header-actions">
-                        <button className="primary-action compact-action" onClick={() => {
-                          setLibraryControlsOpen(false);
-                          setRebindingAction(null);
-                        }}>
+                        <button
+                          type="button"
+                          className="window-control danger"
+                          aria-label="Закрыть настройки управления"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                          }}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            closeLibraryControls();
+                          }}
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                              d="M6 6L18 18M18 6L6 18"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.8"
+                              strokeLinecap="round"
+                            />
+                          </svg>
+                        </button>
+                        <button
+                          type="button"
+                          className="primary-action compact-action"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                          }}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            closeLibraryControls();
+                          }}
+                        >
                           Закрыть
                         </button>
                       </div>

@@ -49,6 +49,7 @@ export interface FriendEntry {
   name: string;
   status: FriendStatus;
   note: string;
+  avatarDataUrl?: string;
 }
 
 export interface ProfileState {
